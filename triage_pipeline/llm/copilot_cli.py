@@ -30,6 +30,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys as _sys
 import threading
 from typing import Optional
 
@@ -40,13 +41,17 @@ _PROCESS_TIMEOUT_SECONDS = 600
 
 
 class CopilotCLIClient(LLMClient):
-    def __init__(self, copilot_binary: str = "copilot"):
+    def __init__(self, copilot_binary: str = "copilot", verbose: bool = False):
         if shutil.which(copilot_binary) is None:
             raise RuntimeError(
                 f"'{copilot_binary}' was not found on PATH. Install/auth the GitHub "
                 "Copilot CLI, or pick a different --backend."
             )
         self.copilot_binary = copilot_binary
+        # When True, stream a human-readable line per tool call/turn to stderr
+        # as the CLI's underlying session progresses, instead of staying silent
+        # until the whole structured_call returns.
+        self.verbose = verbose
 
     def structured_call(
         self,
@@ -74,7 +79,7 @@ class CopilotCLIClient(LLMClient):
             f"```json\n{schema_str}\n```\n"
         )
 
-        result, turns_used = self._run_copilot(prompt, model, cwd, max_tool_turns)
+        result, turns_used = self._run_copilot(prompt, model, cwd, max_tool_turns, stage)
         if turns_used is None:
             # Budget tracking unavailable (shouldn't normally happen) -- treat as fine.
             pass
@@ -90,7 +95,7 @@ class CopilotCLIClient(LLMClient):
             "```json fenced block matching the schema. Respond again with ONLY that "
             "fenced JSON block."
         )
-        result, _ = self._run_copilot(retry_prompt, model, cwd, max_tool_turns)
+        result, _ = self._run_copilot(retry_prompt, model, cwd, max_tool_turns, stage)
         parsed = self._extract_json(result)
         if parsed is not None:
             return parsed
@@ -108,7 +113,12 @@ class CopilotCLIClient(LLMClient):
             return None
 
     def _run_copilot(
-        self, prompt: str, model: str, cwd: Optional[str], max_tool_turns: int
+        self,
+        prompt: str,
+        model: str,
+        cwd: Optional[str],
+        max_tool_turns: int,
+        stage: str = "",
     ) -> tuple[str, Optional[int]]:
         args = [
             self.copilot_binary,
@@ -129,14 +139,11 @@ class CopilotCLIClient(LLMClient):
         if cwd:
             args += ["-C", cwd]
 
-        proc = subprocess.Popen(
-            args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
         turn_ids: set[str] = set()
         final_text_parts: list[str] = []
         budget_exceeded = threading.Event()
 
-        def _reader():
+        def _reader(proc: subprocess.Popen):
             try:
                 for line in proc.stdout:  # type: ignore[union-attr]
                     line = line.strip()
@@ -149,10 +156,17 @@ class CopilotCLIClient(LLMClient):
                     etype = event.get("type")
                     if etype == "assistant.turn_start":
                         turn_ids.add(event.get("data", {}).get("turnId"))
+                        if self.verbose:
+                            print(f"  [{stage}] turn {len(turn_ids)}/{max_tool_turns}...", file=_sys.stderr)
                         if len(turn_ids) > max_tool_turns:
                             budget_exceeded.set()
                             proc.terminate()
                             return
+                    elif etype == "tool.execution_start" and self.verbose:
+                        data = event.get("data", {})
+                        tool_name = data.get("toolName", "?")
+                        tool_args = data.get("arguments", {})
+                        print(f"  [{stage}] tool call: {tool_name}({tool_args})", file=_sys.stderr)
                     elif etype == "assistant.message":
                         content = event.get("data", {}).get("content")
                         if isinstance(content, str):
@@ -164,17 +178,25 @@ class CopilotCLIClient(LLMClient):
             except Exception:
                 pass
 
-        reader_thread = threading.Thread(target=_reader, daemon=True)
-        reader_thread.start()
-        try:
-            proc.wait(timeout=_PROCESS_TIMEOUT_SECONDS)
-        except subprocess.TimeoutExpired:
-            proc.terminate()
+        # Using Popen as a context manager ensures stdout/stderr pipe handles
+        # are always closed on exit (normal, timeout, or terminate), avoiding
+        # the "unclosed file" ResourceWarning a previous version of this
+        # backend left behind. stderr is discarded (DEVNULL): the CLI is run
+        # with --log-level none and we only need stdout's JSON event stream.
+        with subprocess.Popen(
+            args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+        ) as proc:
+            reader_thread = threading.Thread(target=_reader, args=(proc,), daemon=True)
+            reader_thread.start()
+            try:
+                proc.wait(timeout=_PROCESS_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+                reader_thread.join(timeout=5)
+                raise ToolBudgetExhausted(
+                    "copilot CLI process timed out without producing a result", len(turn_ids)
+                )
             reader_thread.join(timeout=5)
-            raise ToolBudgetExhausted(
-                "copilot CLI process timed out without producing a result", len(turn_ids)
-            )
-        reader_thread.join(timeout=5)
 
         if budget_exceeded.is_set():
             raise ToolBudgetExhausted(

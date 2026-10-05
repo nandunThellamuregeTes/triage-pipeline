@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 import warnings
 from dataclasses import asdict
 from pathlib import Path
@@ -53,6 +54,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     p.add_argument("--repo", help="Path to the repository Stage 2 should search / Stage 4 should diff.")
     p.add_argument("--backend", choices=["copilot", "stub"], default="copilot", help="LLM backend.")
+    p.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Stream a line per tool call/turn from the copilot CLI backend as it runs, "
+        "instead of staying silent until a stage finishes.",
+    )
     p.add_argument("--out", help="Write rendered Markdown report to this path (default: stdout).")
     p.add_argument("--json", action="store_true", help="Also/instead print the raw structured report as JSON.")
 
@@ -77,11 +84,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _make_llm_client(backend: str) -> LLMClient:
+def _make_llm_client(backend: str, verbose: bool = False) -> LLMClient:
     if backend == "stub":
         return demo_stub_client()
     if backend == "copilot":
-        return CopilotCLIClient()
+        return CopilotCLIClient(verbose=verbose)
     raise CliError(f"Unknown backend: {backend}")
 
 
@@ -134,7 +141,7 @@ def _run_diagnostic(args) -> int:
         raise CliError("--repo PATH is required (Stage 2 needs a repository to search).")
 
     backend_name = "stub" if args.demo else args.backend
-    llm_client = _make_llm_client(backend_name)
+    llm_client = _make_llm_client(backend_name, verbose=args.verbose)
 
     if not args.no_checkpoint:
         checkpoint_path = args.checkpoint or _default_checkpoint_path(ticket.ticket_id)
@@ -213,14 +220,17 @@ def _run_verify_fix(args) -> int:
 
     try:
         git_tool = GitDiffTool(args.repo)
+        print(f"[stage4] Computing git diff against {args.base}...")
         diff_result = git_tool.diff(args.base, paths=args.paths)
     except (ValueError, RuntimeError) as exc:
         raise CliError(str(exc)) from exc
 
     backend_name = args.backend if args.backend != "stub" else "stub"
-    llm_client = _make_llm_client(backend_name)
+    llm_client = _make_llm_client(backend_name, verbose=args.verbose)
     model = COPILOT_STRONG_MODEL if backend_name == "copilot" else "stub"
 
+    print(f"[stage4] Verifying fix against original diagnosis for {args.ticket_id}...")
+    t0 = time.monotonic()
     verification = stage4_verify.run(
         llm_client,
         args.ticket_id,
@@ -230,6 +240,7 @@ def _run_verify_fix(args) -> int:
         diff_result.truncated,
         model=model,
     )
+    print(f"[stage4] Done in {time.monotonic() - t0:.1f}s")
     markdown = render_fix_verification(args.ticket_id, verification)
 
     if args.out:

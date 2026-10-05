@@ -6,6 +6,7 @@ statements.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -37,8 +38,14 @@ def run_pipeline(
     recent_ticket_titles = recent_ticket_titles or []
 
     # --- Stage 1: Understand & Classify ---
+    print(f"[stage1] Classifying ticket {ticket.ticket_id}...")
+    t0 = time.monotonic()
     facts, classification = stage1_classify.run(
         llm_client, ticket, recent_ticket_titles, model=config.cheap_model
+    )
+    print(
+        f"[stage1] Done in {time.monotonic() - t0:.1f}s -- verdict={classification.verdict}, "
+        f"confidence={classification.confidence:.0%}"
     )
 
     investigation: Optional[InvestigationResult] = None
@@ -47,6 +54,8 @@ def run_pipeline(
     # Deterministic branch: control flow is plain Python reading
     # `classification.verdict`, never an LLM decision (§0.1).
     if classification.verdict == "bug":
+        print("[stage2] Investigating (localize + fix + impact, this can take a while)...")
+        t0 = time.monotonic()
         investigation = stage2_investigate.run(
             llm_client,
             facts,
@@ -56,11 +65,22 @@ def run_pipeline(
             confidence_threshold=config.confidence_threshold,
             max_tool_turns=config.max_tool_turns,
         )
+        print(
+            f"[stage2] Done in {time.monotonic() - t0:.1f}s -- "
+            f"overall_confidence={investigation.overall_confidence:.0%}, "
+            f"{len(investigation.candidate_areas)} candidate area(s), "
+            f"{len(investigation.fix_proposals)} fix proposal(s)"
+            + (" [DEGRADED: tool budget exhausted]" if investigation.degraded else "")
+        )
         # Deterministic story-point scoring -- plain Python, NOT an LLM call (§4).
         if investigation.story_point_factors is not None:
             story_points = score_to_points(investigation.story_point_factors)
+    else:
+        print(f"[stage2] Skipped (verdict is '{classification.verdict}', not 'bug').")
 
     # --- Stage 3: Write-up ---
+    print("[stage3] Writing up report (jira comment, next steps)...")
+    t0 = time.monotonic()
     writeup = stage3_writeup.run(
         llm_client,
         ticket.ticket_id,
@@ -70,6 +90,7 @@ def run_pipeline(
         story_points,
         model=config.cheap_model,
     )
+    print(f"[stage3] Done in {time.monotonic() - t0:.1f}s")
 
     needs_human_review = (
         classification.verdict == "insufficient_info"
