@@ -19,12 +19,32 @@ DISCLAIMER = (
 
 def render_triage_report(report: TriageReport) -> str:
     lines: list[str] = []
-    lines.append(f"# Triage Report: {report.ticket_id}")
+    title_suffix = f": {report.ticket_title}" if report.ticket_title else ""
+    lines.append(f"# Triage Report: {report.ticket_id}{title_suffix}")
     lines.append("")
     lines.append(f"**Verdict:** `{report.verdict}`  |  **Confidence:** {report.confidence:.0%}")
     if report.needs_human_review:
         lines.append("")
         lines.append("> ⚠️ **Flagged for human review.**")
+    lines.append("")
+
+    # Top-of-report summary: what the ticket is about and why this verdict,
+    # composed entirely from already-captured structured fields (no extra
+    # LLM call) so a reader doesn't have to scroll to get oriented.
+    lines.append("## Summary")
+    if report.reported_priority or report.reported_labels:
+        meta_bits = []
+        if report.reported_priority:
+            meta_bits.append(f"reporter-stated priority **{report.reported_priority}**")
+        if report.reported_labels:
+            meta_bits.append("labels: " + ", ".join(f"`{l}`" for l in report.reported_labels))
+        lines.append("- " + "; ".join(meta_bits))
+    if report.symptoms:
+        lines.append("- Reported symptoms:")
+        for s in report.symptoms:
+            lines.append(f"  - {s}")
+    if report.reasoning_short:
+        lines.append(f"- Why this verdict: {report.reasoning_short}")
     lines.append("")
 
     # Severity: show both reported and validated when they differ (§6).

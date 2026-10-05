@@ -168,6 +168,13 @@ class TriageReport:
     duplicate_candidates_considered: list[DuplicateCandidate] = field(default_factory=list)
     root_cause_hypothesis: Optional[str] = None
     missing_info: list[str] = field(default_factory=list)
+    # Top-of-report summary fields -- sourced directly from the original
+    # NormalizedTicket/TicketFacts/Classification, no extra LLM call needed.
+    ticket_title: str = ""
+    symptoms: list[str] = field(default_factory=list)
+    reported_priority: Optional[str] = None
+    reported_labels: list[str] = field(default_factory=list)
+    reasoning_short: str = ""
 
 
 @dataclass

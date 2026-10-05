@@ -118,4 +118,9 @@ def run_pipeline(
         duplicate_candidates_considered=classification.duplicate_candidates_considered,
         root_cause_hypothesis=investigation.root_cause_hypothesis if investigation else None,
         missing_info=facts.missing_info,
+        ticket_title=ticket.title,
+        symptoms=facts.symptoms,
+        reported_priority=ticket.reported_priority,
+        reported_labels=ticket.reported_labels,
+        reasoning_short=classification.reasoning_short,
     )
