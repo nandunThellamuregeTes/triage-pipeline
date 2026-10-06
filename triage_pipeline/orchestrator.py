@@ -30,6 +30,8 @@ class ModelConfig:
     enable_challenge: bool = False
     challenge_confidence_threshold: float = 0.75
     challenge_max_loops: int = stage1_5_challenge.DEFAULT_MAX_LOOPS
+    # Attachment processing config
+    enable_attachments: bool = False
 
 
 def run_pipeline(

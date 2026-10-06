@@ -95,6 +95,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Maximum number of challenge loop iterations (default 3). Only used with --challenge.",
     )
 
+    # Attachment processing
+    p.add_argument(
+        "--enable-attachments",
+        action="store_true",
+        help="Fetch and process attachments from Jira tickets (images, logs, files). "
+        "Applies PII redaction (school names, entities) before sending to LLM.",
+    )
+
     # Stage 4
     p.add_argument("--verify-fix", action="store_true", help="Run Stage 4 (Verify Fix) instead of the main pipeline.")
     p.add_argument("--ticket-id", help="Ticket ID whose earlier diagnostic checkpoint to verify against.")
@@ -112,7 +120,7 @@ def _make_llm_client(backend: str, verbose: bool = False) -> LLMClient:
     raise CliError(f"Unknown backend: {backend}")
 
 
-def _load_ticket(args) -> NormalizedTicket:
+def _load_ticket(args, enable_attachments: bool = False) -> NormalizedTicket:
     if args.demo:
         return RovoExportAdapter(str(DEMO_TICKET_PATH)).fetch()
 
@@ -134,6 +142,7 @@ def _load_ticket(args) -> NormalizedTicket:
                 include_comments=not args.no_comments,
                 include_linked_tickets=not args.no_linked_tickets,
                 max_linked_tickets=args.max_linked_tickets,
+                include_attachments=enable_attachments,
             )
             return adapter.fetch()
         except (JiraAuthError, JiraFetchError) as exc:
@@ -156,7 +165,7 @@ def _default_checkpoint_path(ticket_id: str) -> str:
 def _run_diagnostic(args) -> int:
     pipeline_start_time = time.monotonic()
     
-    ticket = _load_ticket(args)
+    ticket = _load_ticket(args, enable_attachments=args.enable_attachments)
 
     repo_root = str(DEMO_REPO_PATH) if args.demo else args.repo
     if not repo_root:
@@ -183,6 +192,7 @@ def _run_diagnostic(args) -> int:
         enable_challenge=args.challenge,
         challenge_confidence_threshold=args.challenge_confidence_threshold,
         challenge_max_loops=args.challenge_max_loops,
+        enable_attachments=args.enable_attachments,
     )
 
     report = run_pipeline(llm_client, ticket, repo_root, config=config)
