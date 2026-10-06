@@ -18,6 +18,7 @@ import requests
 from ..schemas import LinkedTicket, NormalizedTicket
 from .adf import adf_to_markdown
 from .base import TicketSource
+from .attachment_extractor import extract_attachments
 
 DEFAULT_MAX_LINKED_TICKETS = 10
 _API_PATH = "/rest/api/3/issue/{key}"
@@ -71,6 +72,7 @@ class JiraRestAdapter(TicketSource):
         credentials: JiraCredentials | None = None,
         include_comments: bool = True,
         include_linked_tickets: bool = True,
+        include_attachments: bool = False,
         max_linked_tickets: int = DEFAULT_MAX_LINKED_TICKETS,
         session: requests.Session | None = None,
     ):
@@ -78,6 +80,7 @@ class JiraRestAdapter(TicketSource):
         self.credentials = credentials or JiraCredentials.from_env()
         self.include_comments = include_comments
         self.include_linked_tickets = include_linked_tickets
+        self.include_attachments = include_attachments
         self.max_linked_tickets = max_linked_tickets
         self._session = session or requests.Session()
         self._session.auth = (self.credentials.email, self.credentials.api_token)
@@ -189,6 +192,11 @@ class JiraRestAdapter(TicketSource):
                     if result is not None:
                         linked_tickets.append(result)
 
+        # Extract attachments if enabled
+        attachments = []
+        if self.include_attachments:
+            attachments = extract_attachments(issue, self._session)
+
         project = fields.get("project", {})
         priority = fields.get("priority")
         reporter = fields.get("reporter")
@@ -204,4 +212,5 @@ class JiraRestAdapter(TicketSource):
             reported_labels=list(fields.get("labels", []) or []),
             reporter=reporter.get("displayName") if reporter else None,
             linked_tickets=linked_tickets,
+            attachments=attachments,
         )
