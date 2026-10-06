@@ -10,6 +10,8 @@ import io
 import json
 import mimetypes
 import os
+import tempfile
+import uuid
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -188,16 +190,20 @@ def download_and_extract_attachment(
             warnings.warn(f"Failed to extract text from {filename}: {exc}")
             return None
     elif is_image_file:
-        # For images, store the file path for vision API processing
-        # (actual processing happens in PII redaction phase)
+        # For images, persist the full bytes to a temp file so a later
+        # vision-capable LLM call (image_processing.ImageProcessor) can open
+        # the actual image directly -- a vision model needs the real pixel
+        # data, not a truncated/encoded text preview, to read on-screen text
+        # or compare visual details.
         try:
-            # Convert to base64 for storage
-            import base64
-            content = base64.b64encode(resp.content).decode("utf-8")
-            # Prefix with data URI scheme for clarity
-            content = f"[BASE64_IMAGE: {len(resp.content)} bytes]\n{content[:100]}..."
+            tmp_dir = Path(tempfile.gettempdir()) / "triage_pipeline_attachments"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = f"{uuid.uuid4().hex}_{Path(filename).name}"
+            tmp_path = tmp_dir / safe_name
+            tmp_path.write_bytes(resp.content)
+            content = f"[IMAGE_FILE_PATH]:{tmp_path}"
         except Exception as exc:
-            warnings.warn(f"Failed to process image {filename}: {exc}")
+            warnings.warn(f"Failed to save image {filename}: {exc}")
             return None
     else:
         return None

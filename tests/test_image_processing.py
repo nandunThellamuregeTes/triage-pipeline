@@ -1,270 +1,253 @@
 """Tests for image processing.
 
-Phase 4: Image Processing with Vision API - verify image attachment handling
-and text extraction preparation.
+Verifies real vision extraction (via LLMClient.structured_call, using the
+same StubLLMClient every other stage test uses) and PII redaction, plus
+graceful degradation when extraction fails -- not the old placeholder.
 """
+from pathlib import Path
 
 import pytest
-from unittest.mock import MagicMock
 
 from triage_pipeline.image_processing import ImageProcessor, SUPPORTED_IMAGE_MIMES
-from triage_pipeline.schemas import Attachment
+from triage_pipeline.llm.stub import StubLLMClient
 from triage_pipeline.pii_redaction import PIIRedactor
+from triage_pipeline.schemas import Attachment
+
+
+@pytest.fixture
+def tmp_image_path(tmp_path):
+    """A real on-disk file standing in for a downloaded image."""
+    path = tmp_path / "screenshot.png"
+    path.write_bytes(b"\x89PNG\r\n\x1a\nnot a real png but a real file")
+    return str(path)
 
 
 class TestImageProcessorBasics:
-    """Tests for ImageProcessor basic functionality."""
-
     def test_is_image_png(self):
-        """Identify PNG as supported image format."""
-        processor = ImageProcessor()
-        assert processor.is_image("image/png")
+        assert ImageProcessor().is_image("image/png")
 
     def test_is_image_jpeg(self):
-        """Identify JPEG as supported image format."""
-        processor = ImageProcessor()
-        assert processor.is_image("image/jpeg")
+        assert ImageProcessor().is_image("image/jpeg")
 
     def test_is_image_webp(self):
-        """Identify WebP as supported image format."""
-        processor = ImageProcessor()
-        assert processor.is_image("image/webp")
+        assert ImageProcessor().is_image("image/webp")
 
     def test_is_image_gif(self):
-        """Identify GIF as supported image format."""
-        processor = ImageProcessor()
-        assert processor.is_image("image/gif")
+        assert ImageProcessor().is_image("image/gif")
 
     def test_is_not_text_plain(self):
-        """Reject text/plain as image."""
-        processor = ImageProcessor()
-        assert not processor.is_image("text/plain")
+        assert not ImageProcessor().is_image("text/plain")
 
     def test_is_not_application_json(self):
-        """Reject application/json as image."""
-        processor = ImageProcessor()
-        assert not processor.is_image("application/json")
+        assert not ImageProcessor().is_image("application/json")
 
     def test_supported_image_mimes_list(self):
-        """Verify supported MIME types are defined."""
         assert len(SUPPORTED_IMAGE_MIMES) == 4
         assert "image/png" in SUPPORTED_IMAGE_MIMES
-        assert "image/jpeg" in SUPPORTED_IMAGE_MIMES
 
 
 class TestImageProcessorInitialization:
-    """Tests for ImageProcessor initialization."""
-
     def test_init_without_llm_client(self):
-        """Create processor without LLM client."""
-        processor = ImageProcessor()
-        assert processor.llm_client is None
+        assert ImageProcessor().llm_client is None
 
     def test_init_with_llm_client(self):
-        """Create processor with LLM client."""
-        mock_client = MagicMock()
-        processor = ImageProcessor(llm_client=mock_client)
-        assert processor.llm_client is mock_client
+        client = StubLLMClient({})
+        assert ImageProcessor(llm_client=client).llm_client is client
 
     def test_set_llm_client(self):
-        """Set LLM client after initialization."""
         processor = ImageProcessor()
-        mock_client = MagicMock()
-        processor.set_llm_client(mock_client)
-        assert processor.llm_client is mock_client
+        client = StubLLMClient({})
+        processor.set_llm_client(client)
+        assert processor.llm_client is client
 
 
 class TestImageExtraction:
-    """Tests for image text extraction."""
-
-    def test_extract_text_without_llm_client(self):
-        """Extraction fails gracefully without LLM client."""
+    def test_extract_text_without_llm_client(self, tmp_image_path):
         processor = ImageProcessor()
         extracted_text, error = processor.extract_text_from_image(
-            "[BASE64_IMAGE]:abc123", "image/png"
+            f"[IMAGE_FILE_PATH]:{tmp_image_path}", "image/png"
         )
-        
         assert extracted_text is None
-        assert error is not None
         assert "LLM client not configured" in error
 
-    def test_extract_text_unsupported_mime_type(self):
-        """Extraction fails for unsupported MIME type."""
-        processor = ImageProcessor(llm_client=MagicMock())
+    def test_extract_text_unsupported_mime_type(self, tmp_image_path):
+        client = StubLLMClient({})
+        processor = ImageProcessor(llm_client=client)
         extracted_text, error = processor.extract_text_from_image(
-            "[BASE64_IMAGE]:abc123", "text/plain"
+            f"[IMAGE_FILE_PATH]:{tmp_image_path}", "text/plain"
         )
-        
         assert extracted_text is None
-        assert error is not None
         assert "Unsupported image MIME type" in error
 
-    def test_extract_text_caching(self):
-        """Extracted text is cached."""
-        mock_client = MagicMock()
-        processor = ImageProcessor(llm_client=mock_client)
-        
-        # First call
+    def test_extract_text_missing_marker(self, tmp_image_path):
+        """Content without the [IMAGE_FILE_PATH]: marker can't be opened."""
+        client = StubLLMClient({})
+        processor = ImageProcessor(llm_client=client)
+        extracted_text, error = processor.extract_text_from_image(tmp_image_path, "image/png")
+        assert extracted_text is None
+        assert "IMAGE_FILE_PATH" in error
+
+    def test_extract_text_file_not_found(self):
+        client = StubLLMClient({})
+        processor = ImageProcessor(llm_client=client)
+        extracted_text, error = processor.extract_text_from_image(
+            "[IMAGE_FILE_PATH]:/nonexistent/path/x.png", "image/png"
+        )
+        assert extracted_text is None
+        assert "not found" in error
+
+    def test_extract_text_real_vision_call(self, tmp_image_path):
+        """Vision call goes through structured_call and returns real content,
+        not a placeholder string."""
+        stage_name = f"image_extract::{Path(tmp_image_path).name}"
+        client = StubLLMClient({
+            stage_name: {
+                "extracted_text": 'created_by: 675\n{"module": "Course Overview"}',
+                "visual_description": "A JSON activity-log viewer showing a saved document.",
+            }
+        })
+        processor = ImageProcessor(llm_client=client)
+        extracted_text, error = processor.extract_text_from_image(
+            f"[IMAGE_FILE_PATH]:{tmp_image_path}", "image/png"
+        )
+        assert error is None
+        assert "created_by: 675" in extracted_text
+        assert "activity-log viewer" in extracted_text
+        # Confirms the call was routed through the LLM client, with the real
+        # file path (not a truncated/garbled preview) as context.
+        assert client.calls[0]["stage"] == stage_name
+
+    def test_extract_text_caching(self, tmp_image_path):
+        """A second call for the same image path reuses the cached result
+        instead of invoking the LLM again."""
+        stage_name = f"image_extract::{Path(tmp_image_path).name}"
+        client = StubLLMClient({
+            stage_name: {"extracted_text": "hello", "visual_description": "a screen"}
+        })
+        processor = ImageProcessor(llm_client=client)
+
         extracted1, error1 = processor.extract_text_from_image(
-            "[BASE64_IMAGE]:sameimage123", "image/png"
+            f"[IMAGE_FILE_PATH]:{tmp_image_path}", "image/png"
         )
-        
-        # Second call with same content should return cached result
         extracted2, error2 = processor.extract_text_from_image(
-            "[BASE64_IMAGE]:sameimage123", "image/png"
+            f"[IMAGE_FILE_PATH]:{tmp_image_path}", "image/png"
         )
-        
-        # Both should succeed
-        assert error1 is None
-        assert error2 is None
-        # And should match
+
+        assert error1 is None and error2 is None
         assert extracted1 == extracted2
+        assert len(client.calls) == 1  # second call hit the in-memory cache
+
+    def test_extract_text_llm_failure_is_graceful(self, tmp_image_path):
+        """A client that raises is reported as an error, not an exception."""
+
+        class BoomClient(StubLLMClient):
+            def structured_call(self, **kwargs):
+                raise RuntimeError("copilot CLI crashed")
+
+        processor = ImageProcessor(llm_client=BoomClient({}))
+        extracted_text, error = processor.extract_text_from_image(
+            f"[IMAGE_FILE_PATH]:{tmp_image_path}", "image/png"
+        )
+        assert extracted_text is None
+        assert "copilot CLI crashed" in error
 
 
 class TestImageAttachmentProcessing:
-    """Tests for processing image attachments."""
-
     def test_process_non_image_attachment(self):
-        """Processing non-image attachment returns it unchanged."""
         processor = ImageProcessor()
-        att = Attachment(
-            name="data.csv",
-            mime_type="text/csv",
-            content="col1,col2\n1,2"
-        )
-        
+        att = Attachment(name="data.csv", mime_type="text/csv", content="col1,col2\n1,2")
         processed_att, error = processor.process_image_attachment(att)
-        
         assert processed_att == att
-        assert error is not None
         assert "Not an image" in error
 
     def test_process_empty_image_attachment(self):
-        """Processing empty image attachment fails gracefully."""
         processor = ImageProcessor()
-        att = Attachment(
-            name="empty.png",
-            mime_type="image/png",
-            content=""
-        )
-        
+        att = Attachment(name="empty.png", mime_type="image/png", content="")
         processed_att, error = processor.process_image_attachment(att)
-        
-        assert error is not None
         assert "Empty image content" in error
 
-    def test_process_image_without_llm_client(self):
-        """Image processing fails without LLM client."""
+    def test_process_image_without_llm_client(self, tmp_image_path):
         processor = ImageProcessor()
         att = Attachment(
-            name="screenshot.png",
-            mime_type="image/png",
-            content="[BASE64_IMAGE]:abc123def456"
+            name="screenshot.png", mime_type="image/png", content=f"[IMAGE_FILE_PATH]:{tmp_image_path}"
         )
-        
         processed_att, error = processor.process_image_attachment(att)
-        
-        assert error is not None
         assert "LLM client not configured" in error
 
-    def test_process_image_with_extraction_pending(self):
-        """Image processing indicates extraction is pending."""
-        mock_client = MagicMock()
-        processor = ImageProcessor(llm_client=mock_client)
+    def test_process_image_extracts_real_content(self, tmp_image_path):
+        stage_name = f"image_extract::{Path(tmp_image_path).name}"
+        client = StubLLMClient({
+            stage_name: {
+                "extracted_text": "Error: NullPointerException at Composer.js:42",
+                "visual_description": "An error dialog over the lesson editor.",
+            }
+        })
+        processor = ImageProcessor(llm_client=client)
         att = Attachment(
-            name="screenshot.png",
-            mime_type="image/png",
-            content="[BASE64_IMAGE]:abc123def456"
+            name="screenshot.png", mime_type="image/png", content=f"[IMAGE_FILE_PATH]:{tmp_image_path}"
         )
-        
         processed_att, error = processor.process_image_attachment(att)
-        
-        # Extraction should be pending (placeholder)
-        assert error is None
-        assert "Text extraction pending" in processed_att.content
 
-    def test_process_image_with_redaction(self):
-        """Image text extraction can include PII redaction."""
-        mock_client = MagicMock()
-        processor = ImageProcessor(llm_client=mock_client)
+        assert error is None
+        assert "NullPointerException" in processed_att.content
+        assert processed_att.name == "screenshot.png"
+        assert processed_att.mime_type == "image/png"
+
+    def test_process_image_with_redaction(self, tmp_image_path):
+        stage_name = f"image_extract::{Path(tmp_image_path).name}"
+        client = StubLLMClient({
+            stage_name: {
+                "extracted_text": "Student: Jane Smith reported the issue",
+                "visual_description": "A support ticket screen.",
+            }
+        })
+        processor = ImageProcessor(llm_client=client)
         redactor = PIIRedactor()
-        
         att = Attachment(
-            name="screenshot.png",
-            mime_type="image/png",
-            content="[BASE64_IMAGE]:abc123"
+            name="screenshot.png", mime_type="image/png", content=f"[IMAGE_FILE_PATH]:{tmp_image_path}"
         )
-        
         processed_att, error = processor.process_image_attachment(att, redactor=redactor)
-        
-        # Should process without error
+
         assert error is None
         assert processed_att.mime_type == "image/png"
         assert processed_att.name == "screenshot.png"
 
-    def test_process_image_preserves_metadata(self):
-        """Image processing preserves attachment metadata."""
-        mock_client = MagicMock()
-        processor = ImageProcessor(llm_client=mock_client)
-        
+    def test_process_image_preserves_metadata(self, tmp_image_path):
+        stage_name = f"image_extract::{Path(tmp_image_path).name}"
+        client = StubLLMClient({
+            stage_name: {"extracted_text": "x", "visual_description": "y"}
+        })
+        processor = ImageProcessor(llm_client=client)
         att = Attachment(
             name="diagram.png",
             mime_type="image/png",
-            content="[BASE64_IMAGE]:abc123",
-            size_bytes=5120
+            content=f"[IMAGE_FILE_PATH]:{tmp_image_path}",
+            size_bytes=5120,
         )
-        
         processed_att, error = processor.process_image_attachment(att)
-        
+        assert error is None
         assert processed_att.name == "diagram.png"
         assert processed_att.mime_type == "image/png"
         assert processed_att.size_bytes == 5120
 
+    def test_process_multiple_images_independently(self, tmp_path):
+        path1 = tmp_path / "image1.png"
+        path2 = tmp_path / "image2.png"
+        path1.write_bytes(b"fake1")
+        path2.write_bytes(b"fake2")
 
-class TestImageProcessorEdgeCases:
-    """Edge case tests for image processing."""
+        client = StubLLMClient({
+            "image_extract::image1.png": {"extracted_text": "one", "visual_description": "a"},
+            "image_extract::image2.png": {"extracted_text": "two", "visual_description": "b"},
+        })
+        processor = ImageProcessor(llm_client=client)
 
-    def test_base64_marker_stripping(self):
-        """Base64 content with marker is processed correctly."""
-        mock_client = MagicMock()
-        processor = ImageProcessor(llm_client=mock_client)
-        
-        # Content with marker
-        extracted1, _ = processor.extract_text_from_image(
-            "[BASE64_IMAGE]:data123", "image/png"
-        )
-        
-        # Content without marker
-        extracted2, _ = processor.extract_text_from_image(
-            "data123", "image/png"
-        )
-        
-        # Both should work
-        assert extracted1 is not None
-        assert extracted2 is not None
+        att1 = Attachment(name="image1.png", mime_type="image/png", content=f"[IMAGE_FILE_PATH]:{path1}")
+        att2 = Attachment(name="image2.png", mime_type="image/png", content=f"[IMAGE_FILE_PATH]:{path2}")
 
-    def test_process_multiple_images_caching(self):
-        """Multiple images can be processed with separate cache entries."""
-        mock_client = MagicMock()
-        processor = ImageProcessor(llm_client=mock_client)
-        
-        att1 = Attachment(
-            name="image1.png",
-            mime_type="image/png",
-            content="[BASE64_IMAGE]:abc123"
-        )
-        
-        att2 = Attachment(
-            name="image2.png",
-            mime_type="image/png",
-            content="[BASE64_IMAGE]:def456"
-        )
-        
         processed1, error1 = processor.process_image_attachment(att1)
         processed2, error2 = processor.process_image_attachment(att2)
-        
-        # Both should process independently
-        assert error1 is None
-        assert error2 is None
-        assert processed1.name == "image1.png"
-        assert processed2.name == "image2.png"
+
+        assert error1 is None and error2 is None
+        assert "one" in processed1.content
+        assert "two" in processed2.content

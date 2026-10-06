@@ -19,10 +19,12 @@ from .adapters.jira import JiraAuthError, JiraFetchError, JiraRestAdapter
 from .adapters.manual import ManualAdapter
 from .adapters.rovo import RovoExportAdapter
 from .demo import demo_stub_client
+from .image_processing import ImageProcessor
 from .llm.base import LLMClient
 from .llm.caching import CachingLLMClient
 from .llm.copilot_cli import CopilotCLIClient
 from .orchestrator import ModelConfig, run_pipeline
+from .pii_redaction import PIIRedactor
 from .render import render_fix_verification, render_triage_report
 from .schemas import NormalizedTicket
 from .stages import stage4_verify
@@ -176,6 +178,32 @@ def _default_checkpoint_path(ticket_id: str) -> str:
     return str(Path(".triage_checkpoints") / f"{ticket_id}.json")
 
 
+def _process_image_attachments(ticket: NormalizedTicket, llm_client: LLMClient, model: str) -> None:
+    """Replace each image attachment's content with real vision-extracted
+    text/description, in place on ``ticket``. Runs through ``llm_client`` so
+    results are cached per-stage (see CachingLLMClient) like every other
+    stage, and won't be re-extracted on a rerun unless the ticket changed.
+    Non-image attachments are left untouched. Failures are reported as a
+    warning and the original (unprocessed) attachment is kept, never crash
+    the run over one bad image.
+    """
+    processor = ImageProcessor(llm_client=llm_client)
+    redactor = PIIRedactor()
+    new_attachments = []
+    for att in ticket.attachments:
+        if not processor.is_image(att.mime_type):
+            new_attachments.append(att)
+            continue
+        processed, error = processor.process_image_attachment(att, model=model, redactor=redactor)
+        if error:
+            print(f"[warning] Could not extract content from image attachment {att.name!r}: {error}")
+            new_attachments.append(att)
+        else:
+            print(f"[attachments] Extracted content from image {att.name!r}.")
+            new_attachments.append(processed)
+    ticket.attachments = new_attachments
+
+
 def _run_diagnostic(args) -> int:
     pipeline_start_time = time.monotonic()
     
@@ -201,6 +229,10 @@ def _run_diagnostic(args) -> int:
             fresh=args.fresh,
             redo_from_stage=args.redo_from,
         )
+
+    if args.enable_attachments and ticket.attachments:
+        cheap_model = "stub" if backend_name == "stub" else COPILOT_CHEAP_MODEL
+        _process_image_attachments(ticket, llm_client, cheap_model)
 
     config = ModelConfig(
         cheap_model="stub" if backend_name == "stub" else COPILOT_CHEAP_MODEL,

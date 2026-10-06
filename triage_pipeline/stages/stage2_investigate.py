@@ -248,7 +248,12 @@ def run(
         "prefetched_search_results": prefetched,
     }
     
-    # Include attachment information if present
+    # Include attachment information if present. By this point image
+    # attachments have already been run through ImageProcessor (main.py) and
+    # carry real vision-extracted text/description in `.content`, not raw
+    # binary -- so always include the full content, regardless of
+    # mime_type. (An image attachment whose extraction failed still carries
+    # a harmless `[IMAGE_FILE_PATH]:...` marker here, never raw bytes.)
     if attachments:
         user_content_dict["attachments"] = [
             {
@@ -257,8 +262,7 @@ def run(
                 "size_bytes": att.size_bytes,
                 "is_redacted": att.is_redacted,
                 "redaction_summary": att.redaction_summary,
-                # Include full content for text attachments
-                "content": att.content if att.mime_type.startswith("text/") else "[image/binary content]",
+                "content": att.content,
             }
             for att in attachments
         ]
