@@ -115,3 +115,40 @@ def test_no_linked_tickets_disables_fetching():
     issues = {"MAIN-1": _issue("MAIN-1", links=links), "L-1": _issue("L-1")}
     ticket = _adapter(issues, include_linked_tickets=False).fetch()
     assert ticket.linked_tickets == []
+
+
+def test_custom_field_matching_pattern_is_extracted():
+    issue = _issue("MAIN-1")
+    issue["names"] = {
+        "customfield_11578": "Steps to reproduce issue",
+        "customfield_99999": "Sprint",
+    }
+    issue["fields"]["customfield_11578"] = "Do X then Y then Z"
+    issue["fields"]["customfield_99999"] = {"value": "Sprint 42"}
+    issues = {"MAIN-1": issue}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        ticket = _adapter(issues).fetch()
+    assert ticket.custom_fields == {"Steps to reproduce issue": "Do X then Y then Z"}
+    assert any("Sprint" in str(w.message) for w in caught)
+
+
+def test_custom_fields_disabled_via_include_custom_fields_false():
+    issue = _issue("MAIN-1")
+    issue["names"] = {"customfield_11578": "Steps to reproduce issue"}
+    issue["fields"]["customfield_11578"] = "Do X then Y then Z"
+    issues = {"MAIN-1": issue}
+    ticket = _adapter(issues, include_custom_fields=False).fetch()
+    assert ticket.custom_fields == {}
+
+
+def test_null_and_empty_custom_fields_are_ignored():
+    issue = _issue("MAIN-1")
+    issue["names"] = {"customfield_11578": "Steps to reproduce issue"}
+    issue["fields"]["customfield_11578"] = None
+    issues = {"MAIN-1": issue}
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        ticket = _adapter(issues).fetch()
+    assert ticket.custom_fields == {}
+    assert not caught  # nothing non-null to warn about either

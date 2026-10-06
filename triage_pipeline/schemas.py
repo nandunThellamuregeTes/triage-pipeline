@@ -58,6 +58,10 @@ class NormalizedTicket:
     reporter: Optional[str] = None
     linked_tickets: list[LinkedTicket] = field(default_factory=list)
     attachments: list[Attachment] = field(default_factory=list)
+    # Jira custom fields whose *name* matched a triage-relevant pattern (see
+    # jira.CUSTOM_FIELD_NAME_PATTERNS), keyed by human-readable field name --
+    # e.g. {"Steps to reproduce issue": "...", "Environment": "..."}.
+    custom_fields: dict[str, str] = field(default_factory=dict)
 
     def content_fingerprint(self) -> str:
         """Deterministic hash of everything that should invalidate a cache
@@ -93,6 +97,7 @@ class NormalizedTicket:
                 }
                 for att in self.attachments
             ],
+            "custom_fields": dict(sorted(self.custom_fields.items())),
         }
         blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
         return hashlib.sha256(blob).hexdigest()

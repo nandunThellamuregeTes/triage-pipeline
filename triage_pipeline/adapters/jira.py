@@ -23,6 +23,29 @@ from .attachment_extractor import extract_attachments
 DEFAULT_MAX_LINKED_TICKETS = 10
 _API_PATH = "/rest/api/3/issue/{key}"
 
+# Name-pattern allow-list (Option B): custom field IDs vary per Jira
+# instance/project, but human-readable names for triage-relevant fields tend
+# to follow these patterns. Matched case-insensitively as a substring of the
+# field's display name. Extend this list as new useful custom fields are
+# discovered -- do NOT hardcode field IDs (customfield_NNNNN), they are not
+# portable across projects.
+CUSTOM_FIELD_NAME_PATTERNS = [
+    "steps to reproduce",
+    "reproduce",
+    "repro",
+    "environment",
+    "root cause",
+    "severity",
+    "frequency",
+    "workaround",
+    "expected result",
+    "expected behaviour",
+    "expected behavior",
+    "actual result",
+    "actual behaviour",
+    "actual behavior",
+]
+
 
 class JiraAuthError(RuntimeError):
     """Raised for actionable Jira auth/config problems (never a raw stack trace)."""
@@ -73,6 +96,7 @@ class JiraRestAdapter(TicketSource):
         include_comments: bool = True,
         include_linked_tickets: bool = True,
         include_attachments: bool = False,
+        include_custom_fields: bool = True,
         max_linked_tickets: int = DEFAULT_MAX_LINKED_TICKETS,
         session: requests.Session | None = None,
     ):
@@ -81,6 +105,7 @@ class JiraRestAdapter(TicketSource):
         self.include_comments = include_comments
         self.include_linked_tickets = include_linked_tickets
         self.include_attachments = include_attachments
+        self.include_custom_fields = include_custom_fields
         self.max_linked_tickets = max_linked_tickets
         self._session = session or requests.Session()
         self._session.auth = (self.credentials.email, self.credentials.api_token)
@@ -91,7 +116,7 @@ class JiraRestAdapter(TicketSource):
         try:
             resp = self._session.get(
                 url,
-                params={"expand": "renderedFields", "fields": "*all"},
+                params={"expand": "renderedFields,names", "fields": "*all"},
                 timeout=20,
             )
         except requests.exceptions.RequestException as exc:
@@ -128,6 +153,62 @@ class JiraRestAdapter(TicketSource):
                 "are missing."
             )
         return [adf_to_markdown(c.get("body")) for c in comments]
+
+    @staticmethod
+    def _stringify_custom_field_value(value) -> str:
+        """Best-effort flatten of a Jira custom field's value into plain
+        text. Jira custom fields come in many shapes (plain string, ADF doc,
+        single-select {"value": ...}, multi-select list, user picker, etc.)
+        -- this covers the common ones and falls back to "" rather than
+        raising, so one oddly-shaped field never breaks ingestion."""
+        if value in (None, "", [], {}):
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if isinstance(value, dict):
+            if "content" in value:  # ADF document
+                return adf_to_markdown(value)
+            return str(value.get("value") or value.get("name") or "")
+        if isinstance(value, list):
+            parts = []
+            for item in value:
+                if isinstance(item, dict):
+                    parts.append(str(item.get("value") or item.get("name") or ""))
+                else:
+                    parts.append(str(item))
+            return ", ".join(p for p in parts if p)
+        return ""
+
+    def _extract_custom_fields(self, issue: dict, key: str) -> dict[str, str]:
+        """Scans every non-null `customfield_*` on the issue and keeps only
+        those whose human-readable name matches CUSTOM_FIELD_NAME_PATTERNS
+        (Option B). Everything else is listed in a single warning so a human
+        can notice if something important was skipped, without ever sending
+        all custom fields (this ticket alone had 27) to the LLM."""
+        fields = issue.get("fields", {})
+        names = issue.get("names", {}) or {}
+        matched: dict[str, str] = {}
+        skipped: list[str] = []
+        for field_id, raw_value in fields.items():
+            if not field_id.startswith("customfield_"):
+                continue
+            text = self._stringify_custom_field_value(raw_value)
+            if not text:
+                continue
+            name = names.get(field_id, field_id)
+            if any(pattern in name.lower() for pattern in CUSTOM_FIELD_NAME_PATTERNS):
+                matched[name] = text
+            else:
+                skipped.append(name)
+        if skipped:
+            preview = ", ".join(skipped[:10]) + (", ..." if len(skipped) > 10 else "")
+            warnings.warn(
+                f"{key}: {len(skipped)} other non-null custom field(s) did not match "
+                f"a triage-relevant name pattern and were skipped: {preview}"
+            )
+        return matched
 
     def _collect_link_refs(self, issue: dict) -> list[tuple[str, str]]:
         """Returns (key, link_type) pairs, one level deep: issue links,
@@ -197,6 +278,10 @@ class JiraRestAdapter(TicketSource):
         if self.include_attachments:
             attachments = extract_attachments(issue, self._session)
 
+        custom_fields: dict[str, str] = {}
+        if self.include_custom_fields:
+            custom_fields = self._extract_custom_fields(issue, self.ticket_key)
+
         project = fields.get("project", {})
         priority = fields.get("priority")
         reporter = fields.get("reporter")
@@ -213,4 +298,5 @@ class JiraRestAdapter(TicketSource):
             reporter=reporter.get("displayName") if reporter else None,
             linked_tickets=linked_tickets,
             attachments=attachments,
+            custom_fields=custom_fields,
         )

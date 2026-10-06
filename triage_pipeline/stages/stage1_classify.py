@@ -70,7 +70,12 @@ Your job has two parts, both in ONE response:
    stated. An empty repro_steps list is fine and must NOT by itself push the
    verdict toward "insufficient_info" -- race conditions and heisenbugs often
    arrive with no reliable repro and are exactly the tickets worth
-   investigating. Read every comment on the main ticket AND every linked
+   investigating. `custom_fields` (a dict of Jira custom field name ->
+   value, e.g. "Steps to reproduce issue", "Environment") often contains the
+   MOST authoritative repro/environment detail -- check it before concluding
+   repro_steps are missing or vague; do not re-derive from description_md
+   alone if a matching custom field is present. Read every comment on the
+   main ticket AND every linked
    ticket for technical_signals (function/class/file/table/column names,
    error strings, SQL, recorded hypotheses) -- these seed Stage 2's code
    search. `identifiers` are instance-level lookup keys (user/order/request
@@ -112,6 +117,7 @@ def build_user_content(
         "title": ticket.title,
         "description_md": ticket.description_md,
         "comments": ticket.comments,
+        "custom_fields": ticket.custom_fields,
         "reported_priority": ticket.reported_priority,
         "reported_labels": ticket.reported_labels,
         "linked_tickets": [
