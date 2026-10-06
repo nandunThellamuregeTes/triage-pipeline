@@ -82,7 +82,11 @@ def render_triage_report(report: TriageReport) -> str:
         lines.append("| Path | Line | Confidence | Reason |")
         lines.append("|---|---|---|---|")
         for hit in report.affected_areas:
-            line_str = str(hit.line) if hit.line is not None else "-"
+            if hit.line is not None:
+                line_str = str(hit.line)
+            else:
+                reason_note = hit.line_unavailable_reason or "not specified by model"
+                line_str = f"- _({reason_note})_"
             lines.append(f"| `{hit.path}` | {line_str} | {hit.confidence:.0%} | {hit.reason} |")
         lines.append("")
     elif report.verdict == "bug":

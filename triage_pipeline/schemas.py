@@ -140,6 +140,11 @@ class CodeHit:
     line: Optional[int]
     confidence: float  # 0-1 -- MUST be rendered, not discarded (§6)
     reason: str  # MUST be rendered, not discarded (§6)
+    # Required whenever `line` is None -- explains WHY no single line is
+    # cited (e.g. "entry point/routing class, not a specific defect line",
+    # "ruled out, ran out of time to locate the real path"). Never let a
+    # missing line render as an unexplained "-" in the report (§6).
+    line_unavailable_reason: Optional[str] = None
 
 
 @dataclass

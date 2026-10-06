@@ -61,6 +61,7 @@ OUTPUT_SCHEMA = {
                     "line": {"type": ["integer", "null"]},
                     "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                     "reason": {"type": "string"},
+                    "line_unavailable_reason": {"type": ["string", "null"]},
                 },
             },
         },
@@ -127,7 +128,16 @@ Work in this order, within this SAME session:
    `candidate_areas` with CodeHit-like objects, each with its OWN
    `confidence` (0.0-1.0) and a one-line `reason` -- never omit these, a human
    needs to tell a 0.9-confidence hit from a 0.3-confidence guess sitting in
-   the same list. Set `overall_confidence` to your honest confidence in
+   the same list. Give a specific `line` whenever you can -- use
+   `read_excerpt` to confirm it, don't guess. If you genuinely cannot cite one
+   exact line (e.g. the hit is an entry-point/routing class rather than a
+   specific defect, or you're citing a file you RULED OUT rather than
+   confirmed), set `line` to null AND fill `line_unavailable_reason` with a
+   short explicit reason (e.g. "entry point, not a specific defect line" /
+   "ruled out -- could not locate the real save path in time available").
+   Never leave `line` null without `line_unavailable_reason` -- a human
+   reading the report must never see an unexplained blank. Set
+   `overall_confidence` to your honest confidence in
    `root_cause_hypothesis` (name says "hypothesis" on purpose -- never imply
    certainty).
 2. GATE: if `overall_confidence` < {threshold}, STOP HERE. Return
@@ -277,6 +287,11 @@ def run(
             line=c.get("line"),
             confidence=_normalize_confidence(c["confidence"]),
             reason=redact_secrets(c.get("reason", "")),
+            line_unavailable_reason=(
+                redact_secrets(c["line_unavailable_reason"])
+                if c.get("line") is None and c.get("line_unavailable_reason")
+                else ("not specified by model" if c.get("line") is None else None)
+            ),
         )
         for c in raw.get("candidate_areas", [])
     ]
