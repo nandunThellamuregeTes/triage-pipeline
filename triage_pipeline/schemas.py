@@ -25,6 +25,17 @@ def _asdict(obj) -> dict:
 
 
 @dataclass
+class Attachment:
+    """A file attachment from a Jira ticket, with optional redaction metadata."""
+    name: str  # original filename
+    mime_type: str  # e.g., "text/plain", "image/png", "application/json"
+    content: str  # text content (extracted from file or OCR'd from image)
+    is_redacted: bool = False  # True if PII redaction was applied
+    redaction_summary: Optional[str] = None  # e.g., "2 student names, 1 school name redacted"
+    size_bytes: Optional[int] = None  # original file size before extraction
+
+
+@dataclass
 class LinkedTicket:
     key: str
     link_type: str  # "duplicates", "blocks", "relates to", "subtask", "parent", etc.
@@ -46,6 +57,7 @@ class NormalizedTicket:
     reported_labels: list[str] = field(default_factory=list)
     reporter: Optional[str] = None
     linked_tickets: list[LinkedTicket] = field(default_factory=list)
+    attachments: list[Attachment] = field(default_factory=list)
 
     def content_fingerprint(self) -> str:
         """Deterministic hash of everything that should invalidate a cache
@@ -71,6 +83,15 @@ class NormalizedTicket:
                     "comments": lt.comments,
                 }
                 for lt in self.linked_tickets
+            ],
+            "attachments": [
+                {
+                    "name": att.name,
+                    "mime_type": att.mime_type,
+                    "content_hash": hash(att.content) if att.content else None,
+                    "is_redacted": att.is_redacted,
+                }
+                for att in self.attachments
             ],
         }
         blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
