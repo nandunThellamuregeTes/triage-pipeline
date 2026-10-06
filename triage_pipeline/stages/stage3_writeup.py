@@ -52,7 +52,19 @@ Write:
 - `reporter_followup_md`: ONLY if `missing_info` is non-empty, draft a
   separate, polite comment addressed to the ORIGINAL REPORTER (not the
   engineering team) asking for exactly those specific gaps. Set this to null
-  if `missing_info` is empty.
+  if `missing_info` is empty. CRITICAL: you are also given `repro_steps` and
+  `technical_signals` -- whatever the reporter ALREADY provided. Never draft
+  a question that reads as if that information doesn't exist (e.g. do not
+  ask "what were you doing when it happened" if repro_steps already lists
+  exactly that). Instead, explicitly acknowledge what's already known (e.g.
+  "You listed steps X/Y/Z as a suspected sequence") and ask a narrower,
+  non-redundant question: confirm whether those steps are validated vs. a
+  hypothesis, ask for the specific missing details only (e.g. exact
+  click-by-click timing), or ask them to try the known steps and report
+  back. If `missing_info` restates something already in `repro_steps`
+  (common for "steps unconfirmed"/"not validated" style gaps), treat it as
+  a request for *confirmation/precision*, not a request to re-supply from
+  scratch.
 - `suggested_next_steps`: a short list of suggested (not mandatory) next
   actions, phrased as suggestions.
 
@@ -75,6 +87,8 @@ def build_user_content(
         "reported_severity": facts.reported_severity,
         "reasoning_short": classification.reasoning_short,
         "duplicate_of": classification.duplicate_of,
+        "repro_steps": facts.repro_steps,
+        "technical_signals": facts.technical_signals,
         "missing_info": facts.missing_info,
         "investigation": None
         if investigation is None
