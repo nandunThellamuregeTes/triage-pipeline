@@ -37,7 +37,7 @@ OUTPUT_SCHEMA = {
         },
         "blast_radius_notes": {"type": "string"},
         "concerns": {"type": "array", "items": {"type": "string"}},
-        "confidence": {"type": "number"},
+        "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
         "summary_md": {"type": "string"},
         "suggested_next_steps": {"type": "array", "items": {"type": "string"}},
     },
@@ -74,6 +74,15 @@ Your `summary_md` MUST state outright that this is a static read of a diff,
 not a merge gate, and remind the engineer to actually run the test suite.
 Everything here is advisory -- phrase `suggested_next_steps` as suggestions.
 
+CONFIDENCE SCALE:
+Express confidence as a decimal from 0.0 to 1.0:
+  - 1.0 = fully confident this addresses the root cause
+  - 0.75 = quite confident the fix is sound
+  - 0.5 = moderately confident, some uncertainty remains
+  - 0.25 = uncertain, needs verification
+  - 0.0 = not confident at all
+DO NOT use 0-100 scale (e.g., do not output 80 or 75). Always output as 0.xx.
+
 Respond with structured JSON matching the given schema exactly.
 """
 
@@ -95,6 +104,19 @@ def compute_suggested_tests_found(
         if any(any(c in cf for c in candidates) for cf in changed_files_lower):
             found.append(test)
     return found
+
+
+def _normalize_confidence(value: float) -> float:
+    """
+    Normalize confidence to 0-1 scale.
+    Handles cases where LLM outputs 0-100 instead of 0-1.
+    """
+    conf = float(value)
+    # If > 1, assume it was meant to be 0-100 and convert
+    if conf > 1.0:
+        conf = conf / 100.0
+    # Clamp to valid range
+    return max(0.0, min(1.0, conf))
 
 
 def run(
@@ -148,7 +170,7 @@ def run(
         blast_radius_notes=raw.get("blast_radius_notes", ""),
         suggested_tests_found=suggested_tests_found,
         concerns=list(raw.get("concerns", [])),
-        confidence=float(raw.get("confidence", 0.0)),
+        confidence=_normalize_confidence(raw.get("confidence", 0.0)),
         summary_md=raw.get("summary_md", ""),
         suggested_next_steps=list(raw.get("suggested_next_steps", [])),
     )

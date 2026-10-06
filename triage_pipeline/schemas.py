@@ -175,6 +175,31 @@ class TriageReport:
     reported_priority: Optional[str] = None
     reported_labels: list[str] = field(default_factory=list)
     reasoning_short: str = ""
+    # Challenge loop fields (Stage 1.5)
+    was_challenged: bool = False  # True if challenge loop ran
+    challenge_history: list[ChallengeLoopIteration] = field(default_factory=list)  # all loop iterations
+
+
+@dataclass
+class ChallengeResult:
+    """Agent 2 (Challenge) output for a single iteration of the challenge loop."""
+    can_disprove: bool  # True if Agent 2 found credible flaws
+    flaws_found: list[str] = field(default_factory=list)  # specific flaws or gaps
+    alternative_hypotheses: list[str] = field(default_factory=list)  # possible alternatives
+    codebase_findings: list[str] = field(default_factory=list)  # file:line references
+    confidence_in_disproof: float = 0.0  # 0-1: how confident is Agent 2 in its verdict
+    clarifying_questions: list[str] = field(default_factory=list)  # for Agent 1 to address
+
+
+@dataclass
+class ChallengeLoopIteration:
+    """One iteration of the challenge loop: Agent 2 verdict + Agent 1 regeneration."""
+    loop_num: int
+    agent2_verdict: ChallengeResult
+    agent1_regenerated_hypothesis: Optional[str] = None  # if Agent 2 found flaws
+    convergence_status: Optional[str] = None  # "improved", "no_change", "diverged"
+    confidence_before: float = 0.0
+    confidence_after: float = 0.0
 
 
 @dataclass

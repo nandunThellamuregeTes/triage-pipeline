@@ -59,13 +59,13 @@ OUTPUT_SCHEMA = {
                 "properties": {
                     "path": {"type": "string"},
                     "line": {"type": ["integer", "null"]},
-                    "confidence": {"type": "number"},
+                    "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                     "reason": {"type": "string"},
                 },
             },
         },
         "root_cause_hypothesis": {"type": "string"},
-        "overall_confidence": {"type": "number"},
+        "overall_confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
         "fix_proposals": {
             "type": "array",
             "items": {
@@ -113,10 +113,19 @@ You have two read-only tools: `search_code(query)` and
 already run on the ticket's top technical signals -- do not repeat those
 exact searches.
 
+CONFIDENCE SCALE:
+All confidence values MUST be decimals from 0.0 to 1.0:
+  - 1.0 = fully certain
+  - 0.75 = quite confident
+  - 0.5 = moderately confident, could go either way
+  - 0.25 = uncertain, alternatives plausible
+  - 0.0 = no confidence
+DO NOT use 0-100 scale (e.g., do not output 80 or 75). Always output as 0.xx.
+
 Work in this order, within this SAME session:
 1. Localize: find the code most likely responsible. Populate
    `candidate_areas` with CodeHit-like objects, each with its OWN
-   `confidence` (0-1) and a one-line `reason` -- never omit these, a human
+   `confidence` (0.0-1.0) and a one-line `reason` -- never omit these, a human
    needs to tell a 0.9-confidence hit from a 0.3-confidence guess sitting in
    the same list. Set `overall_confidence` to your honest confidence in
    `root_cause_hypothesis` (name says "hypothesis" on purpose -- never imply
@@ -175,6 +184,19 @@ def _make_tool_executor(code_search: CodeSearchTool):
         raise ValueError(f"unknown tool: {call.name}")
 
     return executor
+
+
+def _normalize_confidence(value: float) -> float:
+    """
+    Normalize confidence to 0-1 scale.
+    Handles cases where LLM outputs 0-100 instead of 0-1.
+    """
+    conf = float(value)
+    # If > 1, assume it was meant to be 0-100 and convert
+    if conf > 1.0:
+        conf = conf / 100.0
+    # Clamp to valid range
+    return max(0.0, min(1.0, conf))
 
 
 def _degraded_result(reason: str) -> InvestigationResult:
@@ -238,13 +260,13 @@ def run(
         CodeHit(
             path=c["path"],
             line=c.get("line"),
-            confidence=float(c["confidence"]),
+            confidence=_normalize_confidence(c["confidence"]),
             reason=redact_secrets(c.get("reason", "")),
         )
         for c in raw.get("candidate_areas", [])
     ]
 
-    overall_confidence = float(raw.get("overall_confidence", 0.0))
+    overall_confidence = _normalize_confidence(raw.get("overall_confidence", 0.0))
 
     fix_proposals_raw = raw.get("fix_proposals") or []
     story_factors_raw = raw.get("story_point_factors")

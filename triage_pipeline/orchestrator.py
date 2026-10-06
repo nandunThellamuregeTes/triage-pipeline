@@ -14,6 +14,7 @@ from .llm.base import LLMClient
 from .rubrics import score_to_points
 from .schemas import InvestigationResult, NormalizedTicket, TriageReport
 from .stages import stage1_classify, stage2_investigate, stage3_writeup
+from .stages import stage1_5_challenge
 
 DEFAULT_CHEAP_MODEL = "cheap"  # placeholder model id, resolved by the chosen backend
 DEFAULT_STRONG_MODEL = "strong"
@@ -25,6 +26,10 @@ class ModelConfig:
     strong_model: str = DEFAULT_STRONG_MODEL
     confidence_threshold: float = stage2_investigate.DEFAULT_CONFIDENCE_THRESHOLD
     max_tool_turns: int = stage2_investigate.DEFAULT_MAX_TOOL_TURNS
+    # Challenge loop config
+    enable_challenge: bool = False
+    challenge_confidence_threshold: float = 0.75
+    challenge_max_loops: int = stage1_5_challenge.DEFAULT_MAX_LOOPS
 
 
 def run_pipeline(
@@ -50,6 +55,10 @@ def run_pipeline(
 
     investigation: Optional[InvestigationResult] = None
     story_points: Optional[int] = None
+    final_confidence = classification.confidence
+    challenge_history = []
+    was_challenged = False
+    escalated_to_human = False
 
     # Deterministic branch: control flow is plain Python reading
     # `classification.verdict`, never an LLM decision (§0.1).
@@ -72,7 +81,41 @@ def run_pipeline(
             f"{len(investigation.fix_proposals)} fix proposal(s)"
             + (" [DEGRADED: tool budget exhausted]" if investigation.degraded else "")
         )
+
+        # --- DECISION GATE: Enter Challenge Loop? ---
+        should_challenge = (
+            config.enable_challenge
+            and investigation.overall_confidence < config.challenge_confidence_threshold
+            and not investigation.degraded
+        )
+
+        if should_challenge:
+            print(
+                f"[stage1.5] Challenge loop triggered "
+                f"(confidence {investigation.overall_confidence:.0%} < {config.challenge_confidence_threshold:.0%})"
+            )
+            t0 = time.monotonic()
+            investigation, final_confidence, challenge_history, escalated_to_human = (
+                stage1_5_challenge.run_challenge_loop(
+                    llm_client,
+                    facts,
+                    ticket.title,
+                    repo_root,
+                    investigation,
+                    investigation.overall_confidence,
+                    model=config.strong_model,
+                    max_loops=config.challenge_max_loops,
+                )
+            )
+            was_challenged = True
+            print(
+                f"[stage1.5] Challenge loop done in {time.monotonic() - t0:.1f}s -- "
+                f"final_confidence={final_confidence:.0%}, "
+                f"escalated={escalated_to_human}"
+            )
+
         # Deterministic story-point scoring -- plain Python, NOT an LLM call (§4).
+        # Use final confidence (after challenge if applicable)
         if investigation.story_point_factors is not None:
             story_points = score_to_points(investigation.story_point_factors)
     else:
@@ -89,12 +132,14 @@ def run_pipeline(
         investigation,
         story_points,
         model=config.cheap_model,
+        challenge_history=challenge_history if was_challenged else None,
     )
     print(f"[stage3] Done in {time.monotonic() - t0:.1f}s")
 
     needs_human_review = (
         classification.verdict == "insufficient_info"
         or classification.confidence < 0.5
+        or escalated_to_human
         or (investigation is not None and investigation.degraded)
         or (investigation is not None and investigation.overall_confidence < config.confidence_threshold)
     )
@@ -109,7 +154,7 @@ def run_pipeline(
         blast_radius=investigation.blast_radius if investigation else None,
         story_points=story_points,
         story_point_factors=investigation.story_point_factors if investigation else None,
-        confidence=classification.confidence,
+        confidence=final_confidence,  # Use final confidence (after challenge)
         needs_human_review=needs_human_review,
         jira_comment_md=writeup["jira_comment_md"],
         reporter_followup_md=writeup["reporter_followup_md"],
@@ -123,4 +168,7 @@ def run_pipeline(
         reported_priority=ticket.reported_priority,
         reported_labels=ticket.reported_labels,
         reasoning_short=classification.reasoning_short,
+        was_challenged=was_challenged,
+        challenge_history=challenge_history,
     )
+

@@ -48,7 +48,7 @@ OUTPUT_SCHEMA = {
                     "type": "string",
                     "enum": ["Critical", "High", "Medium", "Low"],
                 },
-                "confidence": {"type": "number"},
+                "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                 "reasoning_short": {"type": "string"},
                 "duplicate_of": {"type": ["string", "null"]},
             },
@@ -90,6 +90,15 @@ duplicate link occasionally gets attached to a related-but-distinct ticket by
 mistake. If you judge it IS a duplicate, set classification.verdict to
 "duplicate" and classification.duplicate_of to that candidate's ticket_ref.
 
+CONFIDENCE SCALE:
+Express your confidence in the verdict as a decimal number from 0.0 to 1.0:
+  - 1.0 = fully certain in this verdict
+  - 0.75 = quite confident
+  - 0.5 = moderately confident, could go either way
+  - 0.25 = uncertain, many alternative interpretations
+  - 0.0 = no confidence in this classification
+DO NOT use 0-100 scale (e.g., do not output 80 or 75). Always output as 0.xx.
+
 Respond with structured JSON matching the given schema exactly.
 """
 
@@ -126,6 +135,19 @@ def build_user_content(
         ],
     }
     return json.dumps(payload, indent=2)
+
+
+def _normalize_confidence(value: float) -> float:
+    """
+    Normalize confidence to 0-1 scale.
+    Handles cases where LLM outputs 0-100 instead of 0-1.
+    """
+    conf = float(value)
+    # If > 1, assume it was meant to be 0-100 and convert
+    if conf > 1.0:
+        conf = conf / 100.0
+    # Clamp to valid range
+    return max(0.0, min(1.0, conf))
 
 
 def run(
@@ -165,7 +187,7 @@ def run(
     classification = Classification(
         verdict=cl_raw["verdict"],
         validated_severity=cl_raw["validated_severity"],
-        confidence=float(cl_raw["confidence"]),
+        confidence=_normalize_confidence(cl_raw["confidence"]),
         reasoning_short=cl_raw.get("reasoning_short", ""),
         duplicate_of=cl_raw.get("duplicate_of"),
         duplicate_candidates_considered=duplicate_candidates,

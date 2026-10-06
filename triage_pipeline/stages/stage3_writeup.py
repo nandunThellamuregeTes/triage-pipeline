@@ -11,7 +11,7 @@ import json
 from typing import Optional
 
 from ..llm.base import LLMClient
-from ..schemas import Classification, InvestigationResult, TicketFacts
+from ..schemas import Classification, InvestigationResult, TicketFacts, ChallengeLoopIteration
 
 STAGE_NAME = "stage3_writeup"
 
@@ -35,6 +35,11 @@ You are given the already-computed structured findings of Stages 1 and 2
 (classification, root-cause hypothesis, fix proposals, story points). Do NOT
 invent new facts, severities, or fix ideas -- only narrate what you are
 given, in plain prose suitable for a Jira comment.
+
+If challenge_history is provided, it means the hypothesis was validated through
+an iterative challenge loop (Agent 2 tried to disprove it, Agent 1 refined it).
+Include a brief note in the jira_comment_md that mentions this validation process
+and how it improved confidence, but keep it concise.
 
 Write:
 - `jira_comment_md`: an internal engineering-facing draft comment
@@ -61,6 +66,7 @@ def build_user_content(
     classification: Classification,
     investigation: Optional[InvestigationResult],
     story_points: Optional[int],
+    challenge_history: Optional[list[ChallengeLoopIteration]] = None,
 ) -> str:
     payload = {
         "ticket_id": ticket_id,
@@ -87,6 +93,23 @@ def build_user_content(
             "impact_notes": investigation.impact_notes,
         },
         "story_points": story_points,
+        "challenge_history": None
+        if not challenge_history
+        else [
+            {
+                "loop_num": ch.loop_num,
+                "agent2_verdict": {
+                    "can_disprove": ch.agent2_verdict.can_disprove,
+                    "confidence_in_disproof": ch.agent2_verdict.confidence_in_disproof,
+                    "flaws_found": ch.agent2_verdict.flaws_found,
+                    "alternative_hypotheses": ch.agent2_verdict.alternative_hypotheses,
+                },
+                "convergence_status": ch.convergence_status,
+                "confidence_before": ch.confidence_before,
+                "confidence_after": ch.confidence_after,
+            }
+            for ch in challenge_history
+        ],
     }
     return json.dumps(payload, indent=2)
 
@@ -99,8 +122,16 @@ def run(
     investigation: Optional[InvestigationResult],
     story_points: Optional[int],
     model: str,
+    challenge_history: Optional[list[ChallengeLoopIteration]] = None,
 ) -> dict:
-    user_content = build_user_content(ticket_id, facts, classification, investigation, story_points)
+    user_content = build_user_content(
+        ticket_id,
+        facts,
+        classification,
+        investigation,
+        story_points,
+        challenge_history=challenge_history,
+    )
     raw = llm_client.structured_call(
         stage=STAGE_NAME,
         model=model,

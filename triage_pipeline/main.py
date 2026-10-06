@@ -75,6 +75,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Stage 2 localization confidence threshold for gating fix generation (default 0.55).",
     )
 
+    # Challenge loop (Stage 1.5)
+    p.add_argument(
+        "--challenge",
+        action="store_true",
+        help="Enable the iterative challenge loop (Agent 2 tries to disprove Agent 1's hypothesis).",
+    )
+    p.add_argument(
+        "--challenge-confidence-threshold",
+        type=float,
+        default=0.75,
+        help="Challenge loop triggers if hypothesis confidence is below this (default 0.75). "
+        "Only used with --challenge.",
+    )
+    p.add_argument(
+        "--challenge-max-loops",
+        type=int,
+        default=3,
+        help="Maximum number of challenge loop iterations (default 3). Only used with --challenge.",
+    )
+
     # Stage 4
     p.add_argument("--verify-fix", action="store_true", help="Run Stage 4 (Verify Fix) instead of the main pipeline.")
     p.add_argument("--ticket-id", help="Ticket ID whose earlier diagnostic checkpoint to verify against.")
@@ -134,6 +154,8 @@ def _default_checkpoint_path(ticket_id: str) -> str:
 
 
 def _run_diagnostic(args) -> int:
+    pipeline_start_time = time.monotonic()
+    
     ticket = _load_ticket(args)
 
     repo_root = str(DEMO_REPO_PATH) if args.demo else args.repo
@@ -158,9 +180,14 @@ def _run_diagnostic(args) -> int:
         strong_model="stub" if backend_name == "stub" else COPILOT_STRONG_MODEL,
         confidence_threshold=args.confidence_threshold,
         max_tool_turns=args.max_tool_turns or ModelConfig().max_tool_turns,
+        enable_challenge=args.challenge,
+        challenge_confidence_threshold=args.challenge_confidence_threshold,
+        challenge_max_loops=args.challenge_max_loops,
     )
 
     report = run_pipeline(llm_client, ticket, repo_root, config=config)
+    pipeline_total_time = time.monotonic() - pipeline_start_time
+    
     markdown = render_triage_report(report)
 
     if args.out:
@@ -171,6 +198,11 @@ def _run_diagnostic(args) -> int:
 
     if args.json:
         print(json.dumps(asdict(report), indent=2))
+
+    # Print total pipeline timing summary
+    print(f"\n{'='*60}")
+    print(f"[PIPELINE SUMMARY] Total end-to-end time: {pipeline_total_time:.1f}s")
+    print(f"{'='*60}")
 
     return 0
 
