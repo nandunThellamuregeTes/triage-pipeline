@@ -134,6 +134,24 @@ def build_user_content(
             for c in duplicate_candidates
         ],
     }
+    
+    # Include attachment summaries if present
+    if ticket.attachments:
+        payload["attachments"] = [
+            {
+                "name": att.name,
+                "mime_type": att.mime_type,
+                "size_bytes": att.size_bytes,
+                "is_redacted": att.is_redacted,
+                "redaction_summary": att.redaction_summary,
+                # Only include content preview for small attachments
+                "content_preview": (
+                    att.content[:200] + "..." if len(att.content) > 200 else att.content
+                ) if att.content else None,
+            }
+            for att in ticket.attachments
+        ]
+    
     return json.dumps(payload, indent=2)
 
 

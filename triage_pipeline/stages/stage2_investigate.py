@@ -224,21 +224,36 @@ def run(
     model: str,
     confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
     max_tool_turns: int = DEFAULT_MAX_TOOL_TURNS,
+    attachments: Optional[list] = None,
 ) -> InvestigationResult:
     code_search = CodeSearchTool(repo_root)
     prefetched = _prefetch(code_search, ticket_facts.technical_signals)
 
-    user_content = json.dumps(
-        {
-            "ticket_title": ticket_title,
-            "symptoms": ticket_facts.symptoms,
-            "repro_steps": ticket_facts.repro_steps,
-            "stack_trace_or_error": ticket_facts.stack_trace_or_error,
-            "technical_signals": ticket_facts.technical_signals,
-            "prefetched_search_results": prefetched,
-        },
-        indent=2,
-    )
+    user_content_dict = {
+        "ticket_title": ticket_title,
+        "symptoms": ticket_facts.symptoms,
+        "repro_steps": ticket_facts.repro_steps,
+        "stack_trace_or_error": ticket_facts.stack_trace_or_error,
+        "technical_signals": ticket_facts.technical_signals,
+        "prefetched_search_results": prefetched,
+    }
+    
+    # Include attachment information if present
+    if attachments:
+        user_content_dict["attachments"] = [
+            {
+                "name": att.name,
+                "mime_type": att.mime_type,
+                "size_bytes": att.size_bytes,
+                "is_redacted": att.is_redacted,
+                "redaction_summary": att.redaction_summary,
+                # Include full content for text attachments
+                "content": att.content if att.mime_type.startswith("text/") else "[image/binary content]",
+            }
+            for att in attachments
+        ]
+    
+    user_content = json.dumps(user_content_dict, indent=2)
 
     try:
         raw = llm_client.structured_call(

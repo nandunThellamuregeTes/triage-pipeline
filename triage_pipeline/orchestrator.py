@@ -75,6 +75,7 @@ def run_pipeline(
             model=config.strong_model,
             confidence_threshold=config.confidence_threshold,
             max_tool_turns=config.max_tool_turns,
+            attachments=ticket.attachments if config.enable_attachments else None,
         )
         print(
             f"[stage2] Done in {time.monotonic() - t0:.1f}s -- "
