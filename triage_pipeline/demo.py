@@ -167,11 +167,32 @@ def _stage4_fixture(system_prompt, user_content, tool_executor):
     }
 
 
+def _stage2_localize_sample_fixture(system_prompt, user_content, tool_executor):
+    # §1.6: an independent localization-only cross-check sample. Reuses the
+    # same real tool-use loop as the primary pass so the demo's agreement
+    # score reflects a genuine (and, here, consistent) re-search rather than
+    # a hardcoded duplicate of the primary answer.
+    hits = tool_executor(ToolCall("search_code", {"query": "quantity > 10"}))
+    bug_hit = hits[0] if hits else {"path": "billing/discount.py", "line": 10}
+    return {
+        "candidate_areas": [
+            {
+                "path": bug_hit["path"],
+                "line": bug_hit["line"],
+                "confidence": 0.85,
+                "reason": "Independent cross-check sample: same boundary comparison found.",
+            }
+        ],
+    }
+
+
 def demo_stub_client() -> StubLLMClient:
     return StubLLMClient(
         {
             "stage1_classify": _stage1_fixture,
             "stage2_investigate": _stage2_fixture,
+            "stage2_localize_sample1": _stage2_localize_sample_fixture,
+            "stage2_localize_sample2": _stage2_localize_sample_fixture,
             "stage3_writeup": _stage3_fixture,
             "stage4_verify": _stage4_fixture,
         }

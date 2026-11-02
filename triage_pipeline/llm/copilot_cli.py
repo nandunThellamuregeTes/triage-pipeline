@@ -27,16 +27,16 @@ backend would -- so this enforces the SAME budget contract across backends
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import subprocess
 import sys as _sys
 import threading
+import time
 from typing import Optional
 
 from .base import LLMClient, ToolBudgetExhausted, ToolExecutor
+from .cli_common import RETRY_SUFFIX, build_prompt, extract_json
 
-_JSON_FENCE_RE = re.compile(r"```json\s*(.*?)```", re.DOTALL)
 _PROCESS_TIMEOUT_SECONDS = 600
 
 
@@ -52,6 +52,9 @@ class CopilotCLIClient(LLMClient):
         # as the CLI's underlying session progresses, instead of staying silent
         # until the whole structured_call returns.
         self.verbose = verbose
+        # One dict per structured_call (turns, tool_calls, retries, seconds),
+        # used by the side-by-side comparison report.
+        self.stats: list[dict] = []
 
     def structured_call(
         self,
@@ -64,53 +67,36 @@ class CopilotCLIClient(LLMClient):
         tool_executor: Optional[ToolExecutor] = None,
         max_tool_turns: int = 12,
         cwd: Optional[str] = None,
+        extra_dirs: Optional[list[str]] = None,
     ) -> dict:
-        schema_str = json.dumps(output_schema, indent=2)
-        prompt = (
-            f"{system_prompt}\n\n"
-            "---\n"
-            f"{user_content}\n"
-            "---\n\n"
-            "You may use your available read-only tools (file viewing, code search) "
-            "as needed to investigate, within reason. When you are done, respond with "
-            "EXACTLY ONE fenced code block, language `json`, containing a single JSON "
-            "object that strictly matches this schema and nothing else "
-            "(no prose before or after the fence):\n\n"
-            f"```json\n{schema_str}\n```\n"
-        )
+        prompt = build_prompt(system_prompt, user_content, output_schema)
 
-        result, turns_used = self._run_copilot(prompt, model, cwd, max_tool_turns, stage)
-        if turns_used is None:
-            # Budget tracking unavailable (shouldn't normally happen) -- treat as fine.
-            pass
-        parsed = self._extract_json(result)
-        if parsed is not None:
-            return parsed
+        t0 = time.monotonic()
+        stat = {
+            "stage": stage, "model": model, "turns": 0, "tool_calls": 0, "retries": 0,
+            "seconds": 0.0, "input_tokens": 0, "output_tokens": 0,
+            "premium_requests": 0.0, "nano_aiu": 0,
+        }
+        self.stats.append(stat)
+        try:
+            result = self._run_copilot(prompt, model, cwd, max_tool_turns, stage, stat, extra_dirs)
+            parsed = extract_json(result)
+            if parsed is not None:
+                return parsed
 
-        # One corrective retry: the model answered but didn't follow the fence
-        # convention. Ask it to reformat, in the same (fresh) process.
-        retry_prompt = (
-            prompt
-            + "\n\nIMPORTANT: your previous response did not contain a single valid "
-            "```json fenced block matching the schema. Respond again with ONLY that "
-            "fenced JSON block."
-        )
-        result, _ = self._run_copilot(retry_prompt, model, cwd, max_tool_turns, stage)
-        parsed = self._extract_json(result)
-        if parsed is not None:
-            return parsed
+            # One corrective retry: the model answered but didn't follow the fence
+            # convention. Ask it to reformat, in the same (fresh) process.
+            stat["retries"] += 1
+            result = self._run_copilot(prompt + RETRY_SUFFIX, model, cwd, max_tool_turns, stage, stat, extra_dirs)
+            parsed = extract_json(result)
+            if parsed is not None:
+                return parsed
+        finally:
+            stat["seconds"] = round(time.monotonic() - t0, 2)
         raise ValueError(
             f"[{stage}] CopilotCLIClient could not extract a valid JSON result from "
             "the CLI's response after one retry."
         )
-
-    def _extract_json(self, text: str) -> Optional[dict]:
-        match = _JSON_FENCE_RE.search(text)
-        candidate = match.group(1) if match else text
-        try:
-            return json.loads(candidate)
-        except (json.JSONDecodeError, TypeError):
-            return None
 
     def _run_copilot(
         self,
@@ -119,7 +105,9 @@ class CopilotCLIClient(LLMClient):
         cwd: Optional[str],
         max_tool_turns: int,
         stage: str = "",
-    ) -> tuple[str, Optional[int]]:
+        stat: Optional[dict] = None,
+        extra_dirs: Optional[list[str]] = None,
+    ) -> str:
         args = [
             self.copilot_binary,
             "-p",
@@ -138,10 +126,13 @@ class CopilotCLIClient(LLMClient):
             args += ["--model", model]
         if cwd:
             args += ["-C", cwd]
+        for extra in extra_dirs or []:
+            args += ["--add-dir", extra]
 
         turn_ids: set[str] = set()
         final_text_parts: list[str] = []
         budget_exceeded = threading.Event()
+        usage_snapshot: dict = {}
 
         def _reader(proc: subprocess.Popen):
             try:
@@ -162,7 +153,11 @@ class CopilotCLIClient(LLMClient):
                             budget_exceeded.set()
                             proc.terminate()
                             return
-                    elif etype == "tool.execution_start" and self.verbose:
+                    elif etype == "tool.execution_start":
+                        if stat is not None:
+                            stat["tool_calls"] += 1
+                        if not self.verbose:
+                            continue
                         data = event.get("data", {})
                         tool_name = data.get("toolName", "?")
                         tool_args = data.get("arguments", {})
@@ -175,6 +170,10 @@ class CopilotCLIClient(LLMClient):
                             for block in content:
                                 if isinstance(block, dict) and "text" in block:
                                     final_text_parts.append(block["text"])
+                    elif etype == "session.usage_checkpoint":
+                        # Cumulative for this (fresh) session; keep the latest.
+                        usage_snapshot.clear()
+                        usage_snapshot.update(event.get("data", {}).get("accountingSnapshot") or {})
             except Exception:
                 pass
 
@@ -198,10 +197,29 @@ class CopilotCLIClient(LLMClient):
                 )
             reader_thread.join(timeout=5)
 
+        if stat is not None:
+            self._record_usage(stat, usage_snapshot)
+
         if budget_exceeded.is_set():
             raise ToolBudgetExhausted(
                 f"Exceeded max_tool_turns={max_tool_turns} without a final result",
                 len(turn_ids),
             )
 
-        return ("\n".join(final_text_parts), len(turn_ids))
+        if stat is not None:
+            stat["turns"] += len(turn_ids)
+        return "\n".join(final_text_parts)
+
+    @staticmethod
+    def _record_usage(stat: dict, snapshot: dict) -> None:
+        """Add one session's usage (from ``session.usage_checkpoint``) to
+        ``stat``. ``input_tokens`` includes cache reads/writes, matching how the
+        Claude backend reports it. Missing fields are treated as zero."""
+        for metrics in (snapshot.get("modelMetrics") or {}).values():
+            usage = metrics.get("usage") or {}
+            stat["input_tokens"] += int(usage.get("inputTokens") or 0)
+            stat["output_tokens"] += int(usage.get("outputTokens") or 0)
+        stat["premium_requests"] = round(
+            stat["premium_requests"] + float(snapshot.get("totalPremiumRequestCost") or 0.0), 4
+        )
+        stat["nano_aiu"] += int(snapshot.get("totalNanoAiu") or 0)

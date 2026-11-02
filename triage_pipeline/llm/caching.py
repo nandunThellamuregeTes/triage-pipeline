@@ -47,6 +47,17 @@ def _git_head(cwd: str) -> Optional[str]:
     return None
 
 
+def _heads(cwd: Optional[str], extra_dirs: Optional[list[str]]):
+    """HEAD of the working repo; with extra repos, a dict keyed by path so a
+    change to any searched repo invalidates the cache. Single-repo entries keep
+    the original plain-string format."""
+    if not cwd:
+        return None
+    if not extra_dirs:
+        return _git_head(cwd)
+    return {p: _git_head(p) for p in [cwd, *extra_dirs]}
+
+
 class CachingLLMClient(LLMClient):
     def __init__(
         self,
@@ -91,6 +102,7 @@ class CachingLLMClient(LLMClient):
         tool_executor: Optional[ToolExecutor] = None,
         max_tool_turns: int = 12,
         cwd: Optional[str] = None,
+        extra_dirs: Optional[list[str]] = None,
     ) -> dict:
         idx = _stage_index(stage)
         forced_redo = self.redo_from_index is not None and idx >= self.redo_from_index
@@ -98,7 +110,7 @@ class CachingLLMClient(LLMClient):
         if not self.fresh and not forced_redo:
             entry = self._data.get("stages", {}).get(stage)
             if entry is not None:
-                stale_reason = self._stale_reason(entry, cwd)
+                stale_reason = self._stale_reason(entry, cwd, extra_dirs)
                 if stale_reason is None:
                     print(f"[checkpoint] Reusing cached {stage} result.")
                     return entry["output"]
@@ -119,23 +131,26 @@ class CachingLLMClient(LLMClient):
             tool_executor=tool_executor,
             max_tool_turns=max_tool_turns,
             cwd=cwd,
+            **({"extra_dirs": extra_dirs} if extra_dirs else {}),
         )
 
         entry = {
             "output": result,
             "ticket_fingerprint": self.ticket_fingerprint,
-            "repo_head": _git_head(cwd) if cwd else None,
+            "repo_head": _heads(cwd, extra_dirs),
         }
         self._data.setdefault("stages", {})[stage] = entry
         self._save()
         print(f"[checkpoint] Computed and cached {stage} result.")
         return result
 
-    def _stale_reason(self, entry: dict, cwd: Optional[str]) -> Optional[str]:
+    def _stale_reason(
+        self, entry: dict, cwd: Optional[str], extra_dirs: Optional[list[str]] = None
+    ) -> Optional[str]:
         if entry.get("ticket_fingerprint") != self.ticket_fingerprint:
             return "ticket content changed"
         if cwd:
-            current_head = _git_head(cwd)
+            current_head = _heads(cwd, extra_dirs)
             if entry.get("repo_head") != current_head:
                 return f"repo HEAD advanced ({entry.get('repo_head')} -> {current_head})"
         return None

@@ -35,8 +35,9 @@ class StubLLMClient(LLMClient):
         tool_executor: Optional[ToolExecutor] = None,
         max_tool_turns: int = 12,
         cwd: Optional[str] = None,
+        extra_dirs: Optional[list[str]] = None,
     ) -> dict:
-        self.calls.append({"stage": stage, "model": model, "cwd": cwd})
+        self.calls.append({"stage": stage, "model": model, "cwd": cwd, "extra_dirs": extra_dirs})
         if stage not in self.fixtures:
             raise KeyError(f"StubLLMClient has no fixture registered for stage '{stage}'")
         fixture = self.fixtures[stage]

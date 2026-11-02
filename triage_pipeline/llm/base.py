@@ -56,6 +56,7 @@ class LLMClient(ABC):
         tool_executor: Optional[ToolExecutor] = None,
         max_tool_turns: int = DEFAULT_MAX_TOOL_TURNS,
         cwd: Optional[str] = None,
+        extra_dirs: Optional[list[str]] = None,
     ) -> dict:
         """Make one structured call for ``stage``.
 

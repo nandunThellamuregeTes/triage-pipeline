@@ -62,6 +62,94 @@ per-token API billing. Trade-off: each `structured_call` spawns a fresh
 `copilot` process, so there is no cross-call prompt caching the way a
 direct, persistent API client could get.
 
+### Credentials config file
+
+Instead of exporting tokens in every new shell, put them in
+`~/.config/triage-pipeline/config.env` (or point at another file with
+`--config PATH`) and `chmod 600` it:
+
+```
+JIRA_BASE_URL=https://yourcompany.atlassian.net
+JIRA_EMAIL=you@yourcompany.com
+JIRA_API_TOKEN=...
+```
+
+Plain `KEY=VALUE` lines; `#` comments, `export` prefixes and quotes are
+allowed. Already-exported variables take precedence over the file. Only
+`JIRA_*`, `COPILOT_*`, `GH_*`, `GITHUB_TOKEN`, `ANTHROPIC_*` and `CLAUDE_*`
+names are loaded (anything else is ignored with a warning). The `copilot` and
+`claude` subprocesses inherit these values. Never commit this file.
+
+### Choosing the AI harness: Copilot, Claude, or both
+
+`--backend` selects the harness that runs every LLM stage:
+
+| `--backend` | Harness |
+|---|---|
+| `copilot` (default) | GitHub Copilot CLI (`copilot`) |
+| `claude` | Claude Code CLI (`claude`, subscription login) |
+| `both` | Runs both on the same ticket and writes a side-by-side comparison |
+| `stub` | Offline deterministic backend (tests/demo) |
+
+Both harnesses receive byte-identical prompts (`llm/cli_common.py`) and use
+the same models (Haiku 4.5 for Stages 1/3, Sonnet 5.5 for Stages 2/4), so the
+comparison isolates the harness. Only the model-ID spelling differs
+(`claude-sonnet-5.5` on Copilot, `claude-sonnet-5-5` on Claude).
+
+```bash
+python -m triage_pipeline.main --ticket-key PROJ-123 --repo /path/to/checkout \
+    --backend both --fresh --out report.md
+```
+
+`--backend both` writes `report.copilot.md`, `report.claude.md` and
+`report.comparison.md` (verdict/severity/confidence/story-point agreement, top
+code locations, wall-clock, turns, tool calls, JSON retries, and per-stage
+timings; tokens come from both CLIs, while billing differs: USD from Claude,
+premium requests and AI credit units from Copilot). The harnesses
+run one after the other by default for clean timings; add `--parallel` to run
+them concurrently. If one harness fails, the other's report is still written
+and the exit code is 1. Use `--fresh` so cached stages don't hide stats.
+
+### Measuring run-to-run variability: `--repeat N`
+
+LLM output varies between identical runs (neither CLI exposes temperature or a
+seed), so a single run can't tell a harness difference from sampling noise.
+`--repeat N` runs the pipeline N times per backend (works with `copilot`,
+`claude` and `both`; always fresh, no checkpoints) and writes a stability
+summary: verdict distribution and whether it flipped, confidence min/mean/max,
+severity and top-location distribution, mean effort and tokens, plus the
+per-run verdicts and, for `both`, how often the two harnesses agreed.
+
+```bash
+python -m triage_pipeline.main --ticket-key PROJ-123 --repo /path/to/checkout \\
+    --backend both --repeat 5 --out PROJ-123.md
+```
+
+Output: `PROJ-123.<backend>.run1.md` ... per run and
+`PROJ-123.repeat-summary.md`. Without `--out`, per-run reports are not
+written and only the summary is printed. Failed runs are counted but excluded
+from the spread. Note N runs cost N times as much.
+
+Checkpoints are per-harness: Copilot uses `.triage_checkpoints/<id>.json`
+(unchanged), Claude uses `.triage_checkpoints/<id>.claude.json`, so one
+harness never reuses another's cached results. With `--checkpoint PATH` and
+`both`, each backend gets `<stem>.<backend><suffix>`.
+
+### Several repositories (microservices): repeat `--repo`
+
+```bash
+python -m triage_pipeline.main --ticket-key PROJ-123 \
+    --repo staff-app=~/code/staff-app --repo messaging=~/code/messaging --repo auth=~/code/auth \
+    --backend both
+```
+
+- `--repo NAME=PATH` can be repeated; a bare `PATH` is named after its directory. One `--repo` behaves exactly as before.
+- After Stage 1, a **deterministic router (no LLM call, so identical for both harnesses)** ranks the repos by how strongly the ticket's technical signals appear in their code: URL/route strings (host, query and ids stripped, then progressively shorter tails like `/v1/bulk-email`), then identifiers, then plain terms, plus a bonus when a service's name appears in a route. Up to 3 repos are kept.
+- Stage 1.5 and Stage 2 search only the routed repos. The first routed repo is the working directory and the rest are granted with each CLI's `--add-dir`; the prompt gets a multi-repo note and the repo list with the routing evidence. Candidate areas carry a `service` and render as `service:path`.
+- If **no** repo matches any signal for a `bug` verdict, the verdict is downgraded to `insufficient_info` (nothing to search with) and the ticket's `missing_info` asks for the service/endpoint.
+- The report gets a "Services searched" section with the routing evidence and each repo's HEAD. Checkpoints are invalidated if any searched repo's HEAD moves.
+- Not supported yet: `--verify-fix` with several repos (it requires a single `--repo`).
+
 ### Stage 4 -- verify a fix against an earlier diagnosis
 
 ```bash
@@ -81,14 +169,14 @@ by `git diff`; the model only judges its meaning, never reconstructs it.
 python -m triage_pipeline.main --demo
 python -m triage_pipeline.main --source {jira,rovo,manual} [--file PATH] [--ticket-key KEY]
     [--no-comments] [--no-linked-tickets] [--max-linked-tickets N]
-    --repo PATH --backend {copilot,stub}
+    --repo [NAME=]PATH [--repo ...] --backend {copilot,claude,both,stub} [--parallel] [--repeat N] [--config PATH]
     [--out PATH] [--json]
     [--fresh] [--redo-from N] [--no-checkpoint] [--checkpoint PATH]
     [--max-tool-turns N] [--confidence-threshold F]
 
 # Stage 4, independent
 python -m triage_pipeline.main --verify-fix --ticket-id KEY --repo PATH --base REF
-    [--paths PATH...] [--backend {copilot,stub}] [--out PATH] [--json]
+    [--paths PATH...] [--backend {copilot,claude,stub}] [--out PATH] [--json]
 ```
 
 - `--ticket-key` alone implies `--source jira`.
@@ -134,10 +222,18 @@ See the original build spec for the full pipeline diagram (§1). In short:
 Where this spec was silent, the following reasonable, production-quality
 choices were made:
 
-- **Second backend**: implemented only a GitHub Copilot CLI backend
-  (`llm/copilot_cli.py`, shelling out to `copilot -p ... --allow-all-tools
-  --output-format json`), per explicit user instruction. No
+- **Backends**: two CLI-harness backends: GitHub Copilot CLI
+  (`llm/copilot_cli.py`, `copilot -p ... --allow-all-tools --output-format
+  json`) and Claude Code CLI (`llm/claude_cli.py`, `claude -p ...
+  --output-format stream-json --tools Read,Grep,Glob --max-turns N`). No
   `AnthropicLLMClient`/metered-API backend was implemented in this build.
+- **Claude CLI backend**: same fenced-JSON approach and corrective retry as
+  Copilot (not `--json-schema`, to keep prompts/turn counts comparable).
+  `--tools Read,Grep,Glob` removes Bash/Edit/Write entirely, which makes
+  `--permission-mode bypassPermissions` safe and lets `Read` open absolute
+  paths (e.g. image temp files). `--max-turns` is enforced by the CLI
+  (`error_max_turns` -> `ToolBudgetExhausted`), and `cwd` is applied to the
+  subprocess because the CLI has no `-C` flag.
 - **Structured output on the Copilot CLI backend**: the CLI has no API to
   force a custom tool call with an arbitrary JSON schema, so the backend
   instructs the model to respond with exactly one fenced ` ```json ` block
@@ -157,13 +253,15 @@ choices were made:
   session read-only). The `CodeSearchTool`/`read_excerpt` Python interface
   is still used directly by `StubLLMClient` fixtures and is documented as
   the swap point for a future language-aware search tool.
-- **Model IDs for the Copilot CLI backend**: `claude-haiku-4.5` for the
-  cheap/fast tier (Stages 1 and 3), `claude-sonnet-5` for the strong tier
-  (Stages 2 and 4) -- verify current model availability with `copilot
-  --model <id> ...` before relying on these.
+- **Model IDs**: cheap/fast tier (Stages 1 and 3) is Haiku 4.5, strong tier
+  (Stages 2 and 4) is Sonnet 5.5, on both harnesses (`BACKEND_MODELS` in
+  `main.py`): `claude-haiku-4.5`/`claude-sonnet-5.5` for Copilot,
+  `claude-haiku-4-5`/`claude-sonnet-5-5` for Claude. Verify availability
+  with `copilot --model <id>` / `claude --model <id>` before relying on them.
 - **Checkpoint file location**: defaults to
-  `.triage_checkpoints/<ticket_id>.json` in the current working directory;
-  overridable with `--checkpoint PATH`.
+  `.triage_checkpoints/<ticket_id>.json` in the current working directory
+  (`<ticket_id>.claude.json` for `--backend claude`); overridable with
+  `--checkpoint PATH`.
 - **`needs_human_review`**: set `True` whenever the verdict is
   `insufficient_info`, Stage 1's classification confidence is below 0.5,
   Stage 2 degraded due to a tool-budget exhaustion, or Stage 2's

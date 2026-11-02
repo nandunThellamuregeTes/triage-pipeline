@@ -57,6 +57,18 @@ def render_triage_report(report: TriageReport) -> str:
         lines.append(f"- Severity: **{report.validated_severity or report.reported_severity or 'Unknown'}**")
     lines.append("")
 
+    # Evidence quality/gaps: surfaced up front since several HONESTY-RULE
+    # style downstream fields (hypotheses, confidence caps) depend on it.
+    if report.evidence_quality or report.evidence_gaps:
+        lines.append("## Evidence quality")
+        if report.evidence_quality:
+            lines.append(f"- Evidence quality: **{report.evidence_quality}**")
+        if report.evidence_gaps:
+            lines.append("- Gaps:")
+            for gap in report.evidence_gaps:
+                lines.append(f"  - {gap.gap} -- _{gap.why_it_matters}_")
+        lines.append("")
+
     if report.verdict == "duplicate" and report.duplicate_of:
         lines.append(f"## Duplicate of: `{report.duplicate_of}`")
         lines.append("")
@@ -71,9 +83,125 @@ def render_triage_report(report: TriageReport) -> str:
             lines.append(f"| {c.ticket_ref} | {c.similarity_score:.0%} | {c.source} |")
         lines.append("")
 
+    # Attachments (§1.5): always show what Stage 0 actually did, so a
+    # reporter's attached video/image is never implied to be "missing".
+    if report.attachments_analyzed:
+        lines.append("## Attachments")
+        for a in report.attachments_analyzed:
+            if a.inspected:
+                lines.append(f"- `{a.filename}` ({a.type}): inspected.")
+            else:
+                lines.append(f"- `{a.filename}` ({a.type}): NOT inspected -- {a.reason_not_inspected}.")
+        if report.observed_in_attachments is not None:
+            oa = report.observed_in_attachments
+            lines.append("")
+            lines.append("**What was observed:**")
+            if oa.surface:
+                lines.append(f"- Surface: {oa.surface}")
+            if oa.browser_and_os_clues:
+                lines.append(f"- Browser/OS clues: {oa.browser_and_os_clues}")
+            if oa.trigger_clues:
+                lines.append(f"- Trigger clues: {oa.trigger_clues}")
+            if report.observed_periodic_interval_ms is not None:
+                lines.append(
+                    f"- Observed periodic interval (median, computed in code): "
+                    f"**{report.observed_periodic_interval_ms:.0f}ms**"
+                )
+        lines.append("")
+
+    # Ranked hypotheses from the challenge loop (Stage 1.5), shown as
+    # falsifiable claims -- never a bare "root cause" string (§1.5). Mechanism
+    # and trigger are shown SEPARATELY since they converge independently (§1.2).
+    if report.hypotheses:
+        lines.append("## Hypotheses (ranked, from challenge loop)")
+        if report.convergence_status:
+            lines.append(f"_Convergence status: **{report.convergence_status}**. "
+                         "Agreement between agents is not validation -- see confirm/refute below._")
+            lines.append("")
+        for i, h in enumerate(report.hypotheses, start=1):
+            lines.append(f"### {i}. Mechanism: {h.mechanism} -- confidence {h.confidence:.0%}")
+            if h.trigger:
+                lines.append(f"- Trigger (why here/now): {h.trigger}")
+            if h.explains_why_now:
+                lines.append(f"- Why now: {h.explains_why_now}")
+            if h.explains_scope:
+                lines.append(f"- Scope: {h.explains_scope}")
+            if h.explains_intermittency:
+                lines.append(f"- Intermittency: {h.explains_intermittency}")
+            if h.confirm_observation:
+                lines.append(f"- Confirmed if: {h.confirm_observation}")
+            if h.refute_observation:
+                lines.append(f"- Refuted if: {h.refute_observation}")
+            if h.code_evidence:
+                lines.append(f"- Code evidence: `{h.code_evidence}`")
+            lines.append("")
+        if report.agreed_experiments:
+            lines.append("**Agreed experiments (cheapest first, runnable without the affected user):**")
+            for exp in report.agreed_experiments:
+                lines.append(f"- {exp}")
+            lines.append("")
+        if report.agreed_missing_evidence:
+            lines.append("**Agreed missing evidence:**")
+            for item in report.agreed_missing_evidence:
+                lines.append(f"- {item}")
+            lines.append("")
+
     if report.root_cause_hypothesis:
         lines.append(f"## Root cause (hypothesis) -- confidence {report.confidence:.0%}")
         lines.append(report.root_cause_hypothesis)
+        lines.append("")
+        if report.confidence_caps_applied:
+            lines.append("**Confidence caps applied:**")
+            for cap in report.confidence_caps_applied:
+                lines.append(f"- {cap}")
+            lines.append("")
+        if report.confidence_concerns:
+            lines.append("**Additional confidence concerns raised by Stage 2 (not separately capped):**")
+            for concern in report.confidence_concerns:
+                lines.append(f"- {concern}")
+            lines.append("")
+        if report.alternative_hypotheses:
+            lines.append("**Alternative hypotheses (not ruled out):**")
+            for alt in report.alternative_hypotheses:
+                lines.append(f"- {alt}")
+            lines.append("")
+        if report.how_to_confirm:
+            lines.append("**How to confirm/refute:**")
+            for step in report.how_to_confirm:
+                lines.append(f"- {step}")
+            lines.append("")
+        if report.symbols_not_found:
+            lines.append("**Symbols not found (due diligence record):**")
+            for s in report.symbols_not_found:
+                chain_note = "class chain followed" if s.class_chain_followed else "class chain NOT followed"
+                searched = ", ".join(s.searched_in) if s.searched_in else "nowhere recorded"
+                lines.append(f"- `{s.symbol}` -- searched in: {searched} ({chain_note})")
+            lines.append("")
+        if report.localization_agreement is not None:
+            lines.append(
+                f"**Localization agreement across {len(report.localization_samples)} independent "
+                f"samples:** {report.localization_agreement:.0%}"
+            )
+            for i, sample in enumerate(report.localization_samples):
+                lines.append(f"  - Sample {i}: {', '.join(sample) if sample else '(none)'}")
+            lines.append("")
+
+
+
+    # Multi-repo runs: which services were searched and why.
+    if report.service_routing or report.repo_heads:
+        lines.append("## Services searched")
+        if report.service_routing:
+            for m in report.service_routing:
+                lines.append(f"- **{m.service}** (routing score {m.score})")
+                for ev in m.evidence:
+                    lines.append(f"  - {ev}")
+        else:
+            lines.append("_No configured repository matched the ticket's technical signals._")
+        lines.append("")
+        lines.append("Repositories configured (HEAD at run time):")
+        for name, head in report.repo_heads.items():
+            lines.append(f"- `{name}` @ `{(head or 'unknown')[:12]}`")
         lines.append("")
 
     # Affected areas: full CodeHit objects, never a bare path list (§6).
@@ -87,7 +215,8 @@ def render_triage_report(report: TriageReport) -> str:
             else:
                 reason_note = hit.line_unavailable_reason or "not specified by model"
                 line_str = f"- _({reason_note})_"
-            lines.append(f"| `{hit.path}` | {line_str} | {hit.confidence:.0%} | {hit.reason} |")
+            path_str = f"{hit.service}:{hit.path}" if hit.service else hit.path
+            lines.append(f"| `{path_str}` | {line_str} | {hit.confidence:.0%} | {hit.reason} |")
         lines.append("")
     elif report.verdict == "bug":
         lines.append("## Affected areas")
@@ -136,6 +265,35 @@ def render_triage_report(report: TriageReport) -> str:
             justification = f.justifications.get(field_name, "")
             lines.append(f"| {label} | {score} | {justification} |")
         lines.append("")
+
+    if report.was_challenged:
+        lines.append("## Challenge loop")
+        lines.append(
+            f"_Ran {len(report.challenge_history)} iteration(s). "
+            f"Final convergence status: **{report.convergence_status or 'NEEDS_EVIDENCE'}**._"
+        )
+        lines.append("")
+        if report.agent1_initial_pass and report.agent1_initial_pass.hypotheses:
+            lines.append(
+                f"- Agent 1's initial blind pass produced "
+                f"{len(report.agent1_initial_pass.hypotheses)} hypothesis(es)."
+            )
+        if report.agent2_blind_pass and report.agent2_blind_pass.hypotheses:
+            lines.append(
+                f"- Agent 2's independent blind pass produced "
+                f"{len(report.agent2_blind_pass.hypotheses)} hypothesis(es)."
+            )
+        lines.append("")
+        if report.challenge_history:
+            lines.append("| Loop | Mechanism status | Trigger status | Confidence before -> after |")
+            lines.append("|---|---|---|---|")
+            for ch in report.challenge_history:
+                lines.append(
+                    f"| {ch.loop_num} | {ch.agent2_verdict.mechanism_status} | "
+                    f"{ch.agent2_verdict.trigger_status} | "
+                    f"{ch.confidence_before:.0%} -> {ch.confidence_after:.0%} |"
+                )
+            lines.append("")
 
     if report.missing_info:
         lines.append("## Missing information")

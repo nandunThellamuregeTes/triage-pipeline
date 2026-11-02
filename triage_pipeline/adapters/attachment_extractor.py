@@ -29,9 +29,21 @@ SUPPORTED_TEXT_EXTENSIONS = {
 # Size limits (in bytes)
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB per file
 MAX_TOTAL_SIZE = 50 * 1024 * 1024  # 50MB per ticket
+# Videos get a larger per-file allowance (Stage 0's own limit, §1.5), since
+# screen recordings are routinely bigger than a log file but still useful.
+MAX_VIDEO_FILE_SIZE = 50 * 1024 * 1024  # 50MB per video
 
 # Image MIME types (for vision API processing)
 IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+
+# Video extensions/MIME types -- NOT extracted as "text content" the way
+# text files are; instead the raw bytes are persisted to disk (like images)
+# and handed off to stage0_attachments.py's ffmpeg-based frame extraction +
+# vision analysis (§1.5).
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv"}
+VIDEO_MIME_TYPES = {
+    "video/mp4", "video/quicktime", "video/webm", "video/x-msvideo", "video/x-matroska",
+}
 
 
 class AttachmentExtractionError(RuntimeError):
@@ -57,6 +69,11 @@ def _guess_mime_type(filename: str) -> str:
         ".yml": "text/yaml",
         ".conf": "text/plain",
         ".config": "text/plain",
+        ".mp4": "video/mp4",
+        ".mov": "video/quicktime",
+        ".webm": "video/webm",
+        ".avi": "video/x-msvideo",
+        ".mkv": "video/x-matroska",
     }
     
     ext = Path(filename).suffix.lower()
@@ -133,6 +150,7 @@ def download_and_extract_attachment(
     attachment_info: dict,
     session: requests.Session,
     max_file_size: int = MAX_FILE_SIZE,
+    max_video_file_size: int = MAX_VIDEO_FILE_SIZE,
 ) -> Optional[Attachment]:
     """Download and extract a single attachment from Jira.
     
@@ -140,6 +158,8 @@ def download_and_extract_attachment(
         attachment_info: Attachment dict from Jira API response
         session: requests.Session with auth configured
         max_file_size: maximum size per file (default 10MB)
+        max_video_file_size: maximum size for video attachments (default 50MB,
+            matching Stage 0's own limit -- see stage0_attachments.py §1.5)
         
     Returns:
         Attachment object if successful, None if skipped/failed
@@ -152,21 +172,24 @@ def download_and_extract_attachment(
         warnings.warn(f"Attachment {filename} has no download URL, skipping")
         return None
     
-    # Check size limits
-    if size_bytes > max_file_size:
-        warnings.warn(
-            f"Attachment {filename} ({size_bytes} bytes) exceeds max file size "
-            f"({max_file_size} bytes), skipping"
-        )
-        return None
-    
     # Determine if this is a text file we should extract
     ext = Path(filename).suffix.lower()
     is_text_file = ext in SUPPORTED_TEXT_EXTENSIONS
-    is_image_file = _guess_mime_type(filename) in IMAGE_MIME_TYPES
+    guessed_mime = _guess_mime_type(filename)
+    is_image_file = guessed_mime in IMAGE_MIME_TYPES
+    is_video_file = guessed_mime in VIDEO_MIME_TYPES or ext in VIDEO_EXTENSIONS
+
+    # Check size limits -- videos get their own (larger) allowance.
+    effective_limit = max_video_file_size if is_video_file else max_file_size
+    if size_bytes > effective_limit:
+        warnings.warn(
+            f"Attachment {filename} ({size_bytes} bytes) exceeds max file size "
+            f"({effective_limit} bytes), skipping"
+        )
+        return None
     
     # Skip files we can't/won't process
-    if not is_text_file and not is_image_file:
+    if not is_text_file and not is_image_file and not is_video_file:
         return None
     
     # Download the file
@@ -178,7 +201,7 @@ def download_and_extract_attachment(
         return None
     
     # Extract content
-    mime_type = _guess_mime_type(filename)
+    mime_type = guessed_mime
     
     if is_text_file:
         try:
@@ -205,6 +228,22 @@ def download_and_extract_attachment(
         except Exception as exc:
             warnings.warn(f"Failed to save image {filename}: {exc}")
             return None
+    elif is_video_file:
+        # Videos are NEVER treated as "text content" the way log/json/etc.
+        # files are above -- persist the raw bytes and hand the path off to
+        # stage0_attachments.py's ffmpeg-based frame extraction + vision
+        # analysis (§1.5), using the same on-disk-path marker convention as
+        # images.
+        try:
+            tmp_dir = Path(tempfile.gettempdir()) / "triage_pipeline_attachments"
+            tmp_dir.mkdir(parents=True, exist_ok=True)
+            safe_name = f"{uuid.uuid4().hex}_{Path(filename).name}"
+            tmp_path = tmp_dir / safe_name
+            tmp_path.write_bytes(resp.content)
+            content = f"[VIDEO_FILE_PATH]:{tmp_path}"
+        except Exception as exc:
+            warnings.warn(f"Failed to save video {filename}: {exc}")
+            return None
     else:
         return None
     
@@ -223,6 +262,7 @@ def extract_attachments(
     session: requests.Session,
     max_total_size: int = MAX_TOTAL_SIZE,
     max_file_size: int = MAX_FILE_SIZE,
+    max_video_file_size: int = MAX_VIDEO_FILE_SIZE,
 ) -> list[Attachment]:
     """Extract all processable attachments from a Jira issue.
     
@@ -231,6 +271,7 @@ def extract_attachments(
         session: requests.Session with auth configured
         max_total_size: maximum total size for all attachments
         max_file_size: maximum size per file
+        max_video_file_size: maximum size for video attachments
         
     Returns:
         List of successfully extracted Attachment objects
@@ -256,7 +297,7 @@ def extract_attachments(
         
         # Try to extract this attachment
         try:
-            att = download_and_extract_attachment(att_info, session, max_file_size)
+            att = download_and_extract_attachment(att_info, session, max_file_size, max_video_file_size)
             if att is not None:
                 attachments.append(att)
                 total_size += att_size

@@ -5,3 +5,7 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+config.env
+.env
+# Real-ticket reports can contain company code, names and emails
+TRIAG-*-report*.md
