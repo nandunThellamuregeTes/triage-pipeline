@@ -107,7 +107,7 @@ from the CODE SEARCH RULE -- see below).
 
 ```bash
 python3 -m triage_pipeline.main \
-  --ticket-key TRIAG-5210 \
+  --ticket-key PROJ-123 \
   --repo /path/to/repo \
   --challenge
 ```
@@ -116,7 +116,7 @@ python3 -m triage_pipeline.main \
 
 ```bash
 python3 -m triage_pipeline.main \
-  --ticket-key TRIAG-5210 \
+  --ticket-key PROJ-123 \
   --repo /path/to/repo
 ```
 
@@ -124,7 +124,7 @@ python3 -m triage_pipeline.main \
 
 ```bash
 python3 -m triage_pipeline.main \
-  --ticket-key TRIAG-5210 \
+  --ticket-key PROJ-123 \
   --repo /path/to/repo \
   --challenge \
   --challenge-max-loops 2 \
@@ -275,7 +275,7 @@ on whether the challenge loop ran, since the loop always ran earlier.
 Look at console output:
 ```
 [stage0] Analyzing 1 attachment(s)...
-[stage1] Classifying ticket TRIAG-5334...
+[stage1] Classifying ticket PROJ-456...
 [stage1.5] Running challenge loop (blind passes + mechanism-check iteration)...
 [stage1.5a] Agent 2 forming independent blind-pass hypotheses...
 [stage1.5b] Agent 1 forming independent initial hypotheses (seeded by code hits)...
@@ -360,5 +360,5 @@ Refer to:
   (`Hypothesis`, `BlindPassResult`, `ChallengeResult`, `ChallengeRegenResult`,
   `ChallengeLoopIteration`, `Stage0Result`, `AttachmentAnalysis`).
 - `tests/test_stage1_5_challenge.py`, `tests/test_confidence.py`,
-  `tests/test_triag_5334_regression.py` -- worked examples of every
+  `tests/test_scrollbar_regression.py` -- worked examples of every
   convergence status, cap, and the full Stage 0-3 flow end to end.

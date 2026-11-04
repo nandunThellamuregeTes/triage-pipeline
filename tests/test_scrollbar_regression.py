@@ -1,4 +1,4 @@
-"""TRIAG-5334 (synthetic regression fixture, §1.10) -- the most important
+"""PROJ-456 (synthetic regression fixture, §1.10) -- the most important
 test in this suite. No real ticket exists; this is a hand-crafted,
 realistic-but-synthetic end-to-end run exercising every stage (0 through 3)
 via ``StubLLMClient``, with ffmpeg mocked (it is not installed in this
@@ -39,7 +39,7 @@ def repo(tmp_path: Path) -> str:
 
 def _ticket(video_path: str) -> NormalizedTicket:
     return NormalizedTicket(
-        ticket_id="TRIAG-5334",
+        ticket_id="PROJ-456",
         source="jira_api",
         product="lesson-plan-editor",
         title="Scrollbar flashes on/off while typing in lesson plan editor",
@@ -127,7 +127,7 @@ def _stage1_fixture():
             "reported_severity": "Medium",
             "stack_trace_or_error": None,
             "technical_signals": ["render_scrollbar", "content_height > viewport_height"],
-            "identifiers": ["TRIAG-5334"],
+            "identifiers": ["PROJ-456"],
             "missing_info": ["exact browser zoom percentage", "whether any extensions are installed"],
             "is_reproducible_by_reporter": False,
             "first_reported_date": "this week",
@@ -404,7 +404,7 @@ def _stage3_fixture(system_prompt, user_content, tool_executor):
     }
 
 
-def test_triag_5334_synthetic_regression(repo, tmp_path):
+def test_scrollbar_synthetic_regression(repo, tmp_path):
     video_path = tmp_path / "scrollbar-flicker.mp4"
     video_path.write_bytes(b"fake mp4 bytes")
     ticket = _ticket(str(video_path))

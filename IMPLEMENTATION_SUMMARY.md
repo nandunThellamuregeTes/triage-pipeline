@@ -60,13 +60,13 @@ The challenge agent feature enables an adversarial second-pass review of low-con
 **CLI Usage:**
 ```bash
 # Fast path (no challenge)
-python -m triage_pipeline.main --ticket-key TRIAG-5210 --repo /path/to/repo
+python -m triage_pipeline.main --ticket-key PROJ-123 --repo /path/to/repo
 
 # Run with challenge
-python -m triage_pipeline.main --ticket-key TRIAG-5210 --repo /path/to/repo --challenge
+python -m triage_pipeline.main --ticket-key PROJ-123 --repo /path/to/repo --challenge
 
 # Custom settings
-python -m triage_pipeline.main --ticket-key TRIAG-5210 --repo /path/to/repo \
+python -m triage_pipeline.main --ticket-key PROJ-123 --repo /path/to/repo \
   --challenge \
   --challenge-confidence-threshold 0.8 \
   --challenge-max-loops 2
@@ -275,7 +275,7 @@ class ModelConfig:
 
 ---
 
-## Example Flow: TRIAG-5210
+## Example Flow: PROJ-123
 
 ### Without Challenge
 ```

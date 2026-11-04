@@ -65,7 +65,7 @@ This document compares the original triage pipeline (Stage 0–3) with the enhan
 - ✗ **No mechanism to catch reasoning flaws**
 - ✗ **Confidence scores remain static**
 
-**Typical Flow for TRIAG-5210:**
+**Typical Flow for PROJ-123:**
 ```
 Stage 0: Extract symptoms (intermittent data loss, two editors)
          ↓
@@ -212,7 +212,7 @@ Stage 3: Post to Jira
 - ✓ **Human escalation path** (for true ambiguity or no convergence)
 - ✓ **Selective application** (only runs on low-confidence findings, cost-conscious)
 
-**Typical Flow for TRIAG-5210 (with challenge):**
+**Typical Flow for PROJ-123 (with challenge):**
 ```
 Stage 0: Extract symptoms (intermittent data loss, two editors)
          ↓
@@ -297,19 +297,19 @@ Challenge Loop SKIPS if:
 ### Before (Original):
 ```bash
 # Only one way to run
-triage-pipeline analyze --ticket TRIAG-5210
+triage-pipeline analyze --ticket PROJ-123
 ```
 
 ### After (Enhanced):
 ```bash
 # Fast path (no challenge)
-triage-pipeline analyze --ticket TRIAG-5210
+triage-pipeline analyze --ticket PROJ-123
 
 # Run with challenge (thorough)
-triage-pipeline analyze --ticket TRIAG-5210 --challenge
+triage-pipeline analyze --ticket PROJ-123 --challenge
 
 # Custom thresholds
-triage-pipeline analyze --ticket TRIAG-5210 --challenge \
+triage-pipeline analyze --ticket PROJ-123 --challenge \
   --confidence-threshold 0.8 --max-loops 2
 ```
 
